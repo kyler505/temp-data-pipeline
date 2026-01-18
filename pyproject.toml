@@ -7,7 +7,11 @@ name = "temp-data-pipeline"
 version = "0.1.0"
 description = "Data pipeline for processing temperature data from NOAA"
 requires-python = ">=3.8"
-dependencies = []
+dependencies = [
+    "pandas",
+    "pyarrow",
+    "requests",
+]
 
 [project.optional-dependencies]
 dev = []
