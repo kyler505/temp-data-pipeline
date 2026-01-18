@@ -78,7 +78,7 @@ def resolve_station(station_id: str, path: Path | None = None) -> StationMeta:
 
 def isd_url(usaf: str, wban: str, year: int) -> str:
     station_key = f"{usaf.zfill(6)}-{wban.zfill(5)}"
-    return f"{BASE_URL}/{station_key}/{station_key}-{year}.csv"
+    return f"{BASE_URL}/{year}/{station_key}.csv"
 
 
 def download_csv(
