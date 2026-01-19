@@ -12,7 +12,11 @@ import pandas as pd
 import requests
 
 from tempdata.config import raw_isd_csv_dir, raw_noaa_hourly_dir, stations_csv_path
-from tempdata.schemas.hourly_obs import RAW_HOURLY_FIELDS, ensure_hourly_schema_columns
+from tempdata.schemas.hourly_obs import (
+    RAW_HOURLY_FIELDS,
+    ensure_hourly_schema_columns,
+    validate_hourly_obs,
+)
 
 BASE_URL = "https://www.ncei.noaa.gov/data/global-hourly/access"
 
@@ -174,19 +178,14 @@ def _parse_csv(csv_path: Path, station: StationMeta) -> pd.DataFrame:
     return out
 
 
-def _validate_hourly(df: pd.DataFrame, label: str) -> None:
+def _log_coverage(df: pd.DataFrame, label: str) -> None:
+    """Log coverage information for debugging (non-fatal warnings)."""
     if df.empty:
         print(f"[noaa] {label}: 0 rows")
         return
-    if not df["ts_utc"].is_monotonic_increasing:
-        print(f"[noaa] {label}: timestamps not sorted, sorting")
-        df.sort_values("ts_utc", inplace=True)
+
     if df["temp_c"].notna().sum() == 0:
         print(f"[noaa] {label}: temp_c all null")
-    temp_min = df["temp_c"].min()
-    temp_max = df["temp_c"].max()
-    if temp_min < -100 or temp_max > 60:
-        print(f"[noaa] {label}: temp out of bounds (min={temp_min}, max={temp_max})")
 
     min_ts = df["ts_utc"].min()
     max_ts = df["ts_utc"].max()
@@ -238,10 +237,20 @@ def fetch_noaa_hourly(
             df = df[ensure_hourly_schema_columns(df.columns)]
         else:
             df = pd.DataFrame(columns=RAW_HOURLY_FIELDS)
-        _validate_hourly(df, label=str(year))
 
+        # Log coverage info (non-fatal warnings)
+        _log_coverage(df, label=str(year))
+
+        # Schema validation before writing (fail fast if invalid)
+        # Note: require_unique_keys=False for fetch stage since deduplication
+        # happens in clean stage. Duplicates are allowed at fetch.
+        validate_hourly_obs(df, require_unique_keys=False)
+
+        # Atomic write: write to temp file, then rename
         parquet_path = output_root / f"{year}.parquet"
-        df.to_parquet(parquet_path, index=False)
+        tmp_path = parquet_path.with_suffix(".parquet.tmp")
+        df.to_parquet(tmp_path, index=False)
+        tmp_path.rename(parquet_path)
         written.append(parquet_path)
 
         if not use_cache and csv_path.exists():

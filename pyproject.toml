@@ -6,15 +6,23 @@ build-backend = "setuptools.build_meta"
 name = "temp-data-pipeline"
 version = "0.1.0"
 description = "Data pipeline for processing temperature data from NOAA"
-requires-python = ">=3.8"
+requires-python = ">=3.10"
 dependencies = [
-    "pandas",
-    "pyarrow",
-    "requests",
+    "pandas>=2.0",
+    "pyarrow>=14.0",
+    "requests>=2.28",
 ]
 
 [project.optional-dependencies]
-dev = []
+dev = [
+    "pytest>=7.0",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
