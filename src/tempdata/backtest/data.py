@@ -21,7 +21,7 @@ from tempdata.features.build_train_daily_tmax import (
     join_forecast_to_truth,
 )
 from tempdata.features.rolling_stats import compute_all_rolling_features
-from tempdata.schemas.qc_flags import QC_INCOMPLETE_DAY
+from tempdata.schemas.qc_flags import QC_INCOMPLETE_DAY, QC_LOW_COVERAGE
 
 if TYPE_CHECKING:
     from tempdata.backtest.config import BacktestConfig
@@ -185,9 +185,10 @@ def _apply_filters(df: pd.DataFrame, config: BacktestConfig) -> pd.DataFrame:
     if config.lead_hours_allowed is not None:
         df = df[df["lead_hours"].isin(config.lead_hours_allowed)]
     
-    # Filter by QC flags - exclude incomplete days
+    # Filter by QC flags - exclude incomplete or low-coverage days
     if "truth_qc_flags" in df.columns:
-        df = df[(df["truth_qc_flags"] & QC_INCOMPLETE_DAY) == 0]
+        invalid_flags = QC_INCOMPLETE_DAY | QC_LOW_COVERAGE
+        df = df[(df["truth_qc_flags"] & invalid_flags) == 0]
     
     return df.reset_index(drop=True)
 
