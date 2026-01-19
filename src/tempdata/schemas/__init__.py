@@ -7,6 +7,7 @@ Schemas:
 - qc_flags: Quality control flag bitmasks
 - hourly_obs: Canonical hourly observation structure
 - daily_tmax: Daily maximum temperature structure
+- daily_tmax_forecast: Daily Tmax forecast structure
 - validate: Validation helpers and validators
 """
 
@@ -15,6 +16,12 @@ from tempdata.schemas.daily_tmax import (
     REQUIRED_COLUMNS as DAILY_TMAX_REQUIRED_COLUMNS,
     DailyTmax,
     validate_daily_tmax,
+)
+from tempdata.schemas.daily_tmax_forecast import (
+    DAILY_TMAX_FORECAST_FIELDS,
+    REQUIRED_COLUMNS as DAILY_TMAX_FORECAST_REQUIRED_COLUMNS,
+    DailyTmaxForecast,
+    validate_daily_tmax_forecast,
 )
 from tempdata.schemas.hourly_obs import (
     RAW_HOURLY_FIELDS,
@@ -65,6 +72,11 @@ __all__ = [
     "DAILY_TMAX_FIELDS",
     "DAILY_TMAX_REQUIRED_COLUMNS",
     "validate_daily_tmax",
+    # Daily Tmax Forecast
+    "DailyTmaxForecast",
+    "DAILY_TMAX_FORECAST_FIELDS",
+    "DAILY_TMAX_FORECAST_REQUIRED_COLUMNS",
+    "validate_daily_tmax_forecast",
     # Validation helpers
     "require_columns",
     "require_dtypes",

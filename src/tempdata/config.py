@@ -23,3 +23,11 @@ def raw_noaa_hourly_dir(station_id: str) -> Path:
 
 def stations_csv_path() -> Path:
     return project_root() / "stations" / "stations.csv"
+
+
+def raw_openmeteo_forecast_dir(station_id: str) -> Path:
+    return data_root() / "raw" / "forecasts" / "openmeteo" / station_id
+
+
+def clean_openmeteo_forecast_dir(station_id: str) -> Path:
+    return data_root() / "clean" / "forecasts" / "openmeteo" / station_id
