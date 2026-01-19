@@ -1,0 +1,2 @@
+# This file ensures the runs/ directory is tracked by git
+# Backtest run artifacts (config.json, metrics.json, *.parquet) are ignored

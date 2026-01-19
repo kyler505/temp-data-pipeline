@@ -37,6 +37,10 @@ ENV/
 # data/raw/
 # data/clean/
 
+# Backtest run artifacts
+runs/*
+!runs/.gitkeep
+
 # Environment variables
 .env
 .env.local
