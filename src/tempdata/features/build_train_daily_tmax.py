@@ -54,12 +54,16 @@ def join_forecast_to_truth(
     truth_filtered = truth_filtered.copy()
 
     # Ensure both date columns are datetime for proper join
+    # Strip timezone info to enable merge (we only care about the calendar date)
     forecast_df["target_date_local"] = pd.to_datetime(
         forecast_df["target_date_local"]
-    ).dt.normalize()
-    truth_filtered["date_local"] = pd.to_datetime(
-        truth_filtered["date_local"]
-    ).dt.normalize()
+    ).dt.tz_localize(None).dt.normalize()
+    
+    # Handle truth dates which may have timezone
+    truth_dates = pd.to_datetime(truth_filtered["date_local"])
+    if truth_dates.dt.tz is not None:
+        truth_dates = truth_dates.dt.tz_localize(None)
+    truth_filtered["date_local"] = truth_dates.dt.normalize()
 
     # Select columns from truth to merge
     truth_cols = ["station_id", "date_local", "tmax_f", "qc_flags"]
