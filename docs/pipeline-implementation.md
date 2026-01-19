@@ -1,5 +1,3 @@
-# Implementation Plan
-
 # Phase 1: Temperature Data Infrastructure (2–3 weeks)
 
 ## Temperature-focused data pipelines
@@ -15,18 +13,60 @@
 - Normalize units (°F/°C), timestamps, and station metadata
 - Handle station drift, missing hours, and sensor bias
 
-## Temperature-specific feature engineering
+## Temperature-Specific Feature Engineering
 
-- Diurnal cycle encoding (sin/cos of hour)
-- Rolling features:
-    - 24h / 48h / 72h rolling mean, max, min
-- Temperature trend features:
-    - ΔT over last 6h / 12h / 24h
-- Forecast deltas:
-    - Model-forecast vs observed lag errors
-- Location corrections:
-    - Elevation, coastal distance, urban heat proxy
-- Store all outputs in a **time-series DB optimized for temperature** (InfluxDB or Timescale)
+### Core Forecast Features
+
+- **Predicted daily Tmax (`tmax_pred_f`)**
+
+    Raw daily maximum temperature forecast from Open-Meteo
+
+- **Lead time (`lead_hours`)**
+
+    Hours between forecast issue time and target local calendar day
+
+- **Forecast source**
+
+    Identifier for forecast provider (e.g., `openmeteo`)
+
+
+---
+
+### Seasonal & Calendar Features
+
+- **Day-of-year encoding (`sin_doy`, `cos_doy`)**
+
+    Captures seasonal patterns in forecast bias
+
+- **Month**
+
+    Coarse seasonal regime indicator
+
+
+---
+
+### Forecast Bias & Error History
+
+Rolling statistics computed **only from past forecast residuals** (no future leakage):
+
+- **Rolling bias:** 7-day, 14-day, 30-day mean forecast error
+- **Rolling error:** 14-day and 30-day RMSE
+- **Lead-time uncertainty (`sigma_lead`)**
+
+    Historical residual standard deviation for the given lead time
+
+
+---
+
+### Static Station Metadata
+
+Leakage-free location corrections derived from `stations.csv`:
+
+- **Elevation**
+- **Distance to coast**
+- **Urban heat proxy**
+
+(Optional interaction features with seasonality or lead time.)
 
 ## Temperature backtesting framework
 
@@ -177,22 +217,22 @@
 # Key Decision Points (Temperature-Specific)
 
 - **After Phase 2:**
-    
+
     Ensemble must achieve:
-    
+
     - MAE ≤ 1.5°F (hourly) or ≤ 2°F (daily Tmax)
     - ≥70% bin-hit accuracy on historical markets
 - **After Phase 3:**
-    
+
     End-to-end temperature inference latency <500ms
-    
+
 - **Phase 4 rollout:**
-    
+
     Max 1–2% capital per temperature market
-    
+
 - **Phase 5 guardrails:**
-    
+
     Halt if:
-    
+
     - MAE worsens by >25% vs baseline
     - Bias exceeds ±2°F for 3 consecutive days

@@ -31,3 +31,8 @@ def raw_openmeteo_forecast_dir(station_id: str) -> Path:
 
 def clean_openmeteo_forecast_dir(station_id: str) -> Path:
     return data_root() / "clean" / "forecasts" / "openmeteo" / station_id
+
+
+def train_daily_tmax_dir(station_id: str) -> Path:
+    """Directory for train_daily_tmax feature-engineered datasets."""
+    return data_root() / "train" / "daily_tmax" / station_id
