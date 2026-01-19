@@ -17,6 +17,7 @@ import numpy as np
 import pandas as pd
 
 from tempdata.backtest.bins import BinSet, compute_bin_probabilities
+from tempdata.backtest.pricing import MarketPrices
 from tempdata.backtest.strategy import Order, Side
 
 if TYPE_CHECKING:
@@ -64,6 +65,7 @@ class Trade:
     winning_bin: int | None = None
     pnl: float | None = None
     is_settled: bool = False
+    reserved_margin: float = 0.0
 
 
 @dataclass
@@ -77,6 +79,7 @@ class SimulatorState:
     exposure: dict[int, float] = field(default_factory=dict)  # bin_id -> exposure
     trades: list[Trade] = field(default_factory=list)
     trade_counter: int = 0
+    reserved_margin: float = 0.0
     
     def get_total_exposure(self) -> float:
         """Get total absolute exposure across all bins."""
@@ -205,7 +208,7 @@ class Simulator:
             
             # Execute orders
             for order in orders:
-                self._execute_order(order, row, idx, state)
+                self._execute_order(order, row, idx, state, prices)
         
         # Settle all trades
         if verbose:
@@ -228,13 +231,28 @@ class Simulator:
         row: pd.Series,
         row_idx: int,
         state: SimulatorState,
+        prices: MarketPrices,
     ) -> None:
         """Execute a single order with slippage."""
-        # Apply slippage
+        # Check bid/ask and apply slippage
         if order.side == Side.BUY:
-            fill_price = min(order.limit_price + self.slippage, 0.99)
+            ask = prices.ask.get(order.bin_id)
+            if ask is None or order.limit_price < ask:
+                return
+
+            fill_price = min(ask + self.slippage, 0.99)
+            cost = order.size * fill_price
+            if state.bankroll - state.reserved_margin < cost:
+                return
         else:
-            fill_price = max(order.limit_price - self.slippage, 0.01)
+            bid = prices.bid.get(order.bin_id)
+            if bid is None or order.limit_price > bid:
+                return
+
+            fill_price = max(bid - self.slippage, 0.01)
+            required_margin = order.size * (1 - fill_price)
+            if state.bankroll - state.reserved_margin < required_margin:
+                return
         
         # Create trade record
         trade = Trade(
@@ -250,6 +268,7 @@ class Simulator:
             edge=order.edge,
             model_prob=order.model_prob,
             market_price=order.market_price,
+            reserved_margin=required_margin if order.side == Side.SELL else 0.0,
         )
         
         # Update state
@@ -262,6 +281,7 @@ class Simulator:
         else:
             state.add_exposure(order.bin_id, -order.size)
             state.bankroll += order.size * fill_price
+            state.reserved_margin += required_margin
     
     def _settle_trades(self, state: SimulatorState, df: pd.DataFrame) -> None:
         """Settle all trades based on actual outcomes."""
@@ -302,6 +322,10 @@ class Simulator:
                 trade.pnl = pnl
                 trade.is_settled = True
                 state.bankroll += pnl
+                if trade.side == "sell":
+                    state.reserved_margin = max(
+                        0.0, state.reserved_margin - trade.reserved_margin
+                    )
     
     def _build_trades_df(self, state: SimulatorState) -> pd.DataFrame:
         """Convert trades to DataFrame."""
@@ -310,7 +334,7 @@ class Simulator:
                 "trade_id", "row_idx", "station_id", "issue_time_utc",
                 "target_date_local", "bin_id", "side", "size", "fill_price",
                 "edge", "model_prob", "market_price", "actual_value",
-                "winning_bin", "pnl", "is_settled",
+                "winning_bin", "pnl", "is_settled", "reserved_margin",
             ])
         
         records = []
@@ -332,6 +356,7 @@ class Simulator:
                 "winning_bin": t.winning_bin,
                 "pnl": t.pnl,
                 "is_settled": t.is_settled,
+                "reserved_margin": t.reserved_margin,
             })
         
         return pd.DataFrame(records)
@@ -378,7 +403,7 @@ class Simulator:
             "trade_id", "row_idx", "station_id", "issue_time_utc",
             "target_date_local", "bin_id", "side", "size", "fill_price",
             "edge", "model_prob", "market_price", "actual_value",
-            "winning_bin", "pnl", "is_settled",
+            "winning_bin", "pnl", "is_settled", "reserved_margin",
         ])
         daily_df = pd.DataFrame(columns=[
             "target_date_local", "station_id", "n_trades", "total_size",
