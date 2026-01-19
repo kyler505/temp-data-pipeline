@@ -23,8 +23,6 @@ backtest = [
     "plotly>=5.15.0",
     "jupyter>=1.0.0",
 ]
-
-[project.optional-dependencies]
 dev = [
     "pytest>=7.0",
 ]
