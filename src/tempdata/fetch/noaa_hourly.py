@@ -118,11 +118,17 @@ def _safe_float(value: str | float | None) -> float | None:
 
 
 def _parse_temp(value: str | float | None) -> float | None:
+    """Parse ISD temperature field to Celsius.
+
+    ISD stores temperatures in tenths of degrees Celsius (e.g., "150" = 15.0°C).
+    Missing values are encoded as 9999 or +9999.
+    """
     if value is None:
         return None
     if isinstance(value, (int, float)):
         raw = float(value)
     else:
+        # ISD format: "+0150,1" where first part is temp in tenths C
         part = value.split(",", maxsplit=1)[0].strip()
         if part == "":
             return None
@@ -130,10 +136,15 @@ def _parse_temp(value: str | float | None) -> float | None:
             raw = float(part)
         except ValueError:
             return None
+
+    # Missing value indicator
     if abs(raw) >= 9990:
         return None
-    if abs(raw) > 200:
-        raw = raw / 10.0
+
+    # ISD temperatures are always in tenths of degrees Celsius
+    # Convert to actual Celsius
+    raw = raw / 10.0
+
     return raw
 
 
