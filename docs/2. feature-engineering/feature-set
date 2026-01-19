@@ -1,0 +1,137 @@
+## Temperature-Specific Feature Engineering (Daily Tmax)
+
+### Objective
+
+Transform daily Tmax forecasts into a **model-ready feature set** that improves accuracy and uncertainty calibration relative to raw forecasts, while remaining **causality-safe** and **market-aligned**.
+
+All features must be derivable from information available **at forecast issue time**.
+
+---
+
+### Feature Design Principles
+
+* **Daily-scale only**: No hourly or sub-daily dynamics.
+* **No target leakage**: Never use observed temperatures from or near the target day.
+* **Interpretability first**: Each feature must have a clear physical or statistical justification.
+* **Forecast-centric**: Features correct or contextualize the forecast, not replace it.
+
+---
+
+### Core Forecast Features (Required)
+
+These form the baseline input to all models.
+
+* `tmax_pred_f`
+  Raw Open-Meteo daily maximum temperature forecast (°F)
+* `lead_hours`
+  Hours between forecast issue time and target local date
+* `forecast_source`
+  Constant identifier (e.g., `"openmeteo"`)
+
+---
+
+### Seasonal & Calendar Features
+
+Capture systematic seasonal bias in daily Tmax forecasts.
+
+* `sin_doy`, `cos_doy`
+  Sinusoidal encoding of day-of-year
+* `month`
+  Integer month (1–12)
+
+> Rationale: Forecast bias and error variance vary strongly by season.
+
+---
+
+### Forecast Bias & Error History (Key Signal)
+
+Rolling statistics computed **only from past forecast residuals**.
+
+All windows are strictly backward-looking relative to `issue_time_utc`.
+
+* `bias_7d`, `bias_14d`, `bias_30d`
+  Rolling mean forecast error (forecast − observed)
+* `rmse_14d`, `rmse_30d`
+  Rolling RMSE of forecast error
+* `sigma_lead`
+  Historical standard deviation of residuals for the given `lead_hours`
+
+> These features typically deliver the largest performance gain over raw forecasts.
+
+---
+
+### Static Station Metadata (Leakage-Free)
+
+Station-specific corrections that generalize well and enable future multi-station scaling.
+
+From `stations.csv`:
+
+* `elevation_m`
+* `distance_to_coast_km`
+* `urban_heat_index` (or proxy)
+
+Optional interactions:
+
+* `elevation_m × sin_doy`
+* `distance_to_coast_km × lead_hours`
+
+---
+
+### Explicitly Excluded Features
+
+The following are **not used** in daily Tmax modeling:
+
+* Diurnal cycle encodings (`sin(hour)`, `cos(hour)`)
+* Rolling observed temperature statistics (24h/48h/72h)
+* Short-term temperature trends (ΔT over last hours)
+* Any feature derived from post-issue observations
+
+> These are hourly-scale features and introduce leakage or misaligned signal for daily Tmax prediction.
+
+---
+
+### Output: Model-Ready Training Dataset
+
+**Table:** `train_daily_tmax`
+
+**Features**
+
+* Core forecast features
+* Seasonal encodings
+* Rolling bias/error statistics
+* Static station metadata
+
+**Label**
+
+* `tmax_actual_f` (from validated `daily_tmax` truth)
+
+**Metadata**
+
+* `station_id`
+* `issue_time_utc`
+* `target_date_local`
+* `lead_hours`
+
+Rows with insufficient truth quality (e.g., low coverage days) are excluded at this stage.
+
+---
+
+### Validation Checks
+
+* No duplicate `(station_id, issue_time_utc, target_date_local)`
+* No NaNs in required features (after warm-up period)
+* Feature values within physically reasonable bounds
+* Rolling features only reference data strictly prior to `issue_time_utc`
+
+---
+
+### Rationale Summary
+
+Daily Tmax prediction is driven by:
+
+* forecast bias,
+* seasonality,
+* lead-time-dependent uncertainty,
+  not by intraday temperature physics.
+
+This feature set maximizes signal extraction while keeping the pipeline simple, safe, and tradable.

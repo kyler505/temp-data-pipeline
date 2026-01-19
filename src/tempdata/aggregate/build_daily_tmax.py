@@ -112,6 +112,10 @@ def build_daily_tmax(
     low_coverage = (daily["coverage_hours"] < min_coverage_hours) & (daily["coverage_hours"] > 0)
     daily.loc[low_coverage, "qc_flags"] = daily.loc[low_coverage, "qc_flags"] | QC_LOW_COVERAGE
 
+    # Remove days with no valid observations (tmax_c is null)
+    # These days have coverage_hours == 0 and QC_INCOMPLETE_DAY flag
+    daily = daily[daily["tmax_c"].notna()].reset_index(drop=True)
+
     # Ensure column order
     daily = daily[DAILY_TMAX_FIELDS]
 
