@@ -50,7 +50,8 @@ def _compute_lead_hours(
     target_midnight_utc = target_midnight_local.astimezone(timezone.utc)
     # Compute lead hours
     delta_seconds = (target_midnight_utc - issue_time_utc).total_seconds()
-    return int(delta_seconds // 3600)
+    lead_hours = int(delta_seconds // 3600)
+    return max(0, lead_hours)
 
 
 def _fetch_openmeteo_json(
