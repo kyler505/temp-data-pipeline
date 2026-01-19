@@ -15,6 +15,8 @@ from typing import Protocol, runtime_checkable
 import numpy as np
 import pandas as pd
 
+from tempdata.backtest.pricing import MarketPrices
+
 
 class Side(Enum):
     """Trade side enumeration."""
@@ -61,7 +63,7 @@ class Strategy(Protocol):
     def generate_orders(
         self,
         row: pd.Series,
-        prices: dict[int, float],
+        prices: MarketPrices,
         bin_probs: np.ndarray,
         bankroll: float,
         exposure: dict[int, float],
@@ -70,7 +72,7 @@ class Strategy(Protocol):
         
         Args:
             row: Data row with features (for context)
-            prices: Market prices for each bin (bin_id -> price)
+            prices: Market prices (mid/bid/ask)
             bin_probs: Model's predicted probabilities for each bin
             bankroll: Current available bankroll
             exposure: Current exposure by bin (bin_id -> dollar exposure)
@@ -87,7 +89,7 @@ class NoOpStrategy:
     def generate_orders(
         self,
         row: pd.Series,
-        prices: dict[int, float],
+        prices: MarketPrices,
         bin_probs: np.ndarray,
         bankroll: float,
         exposure: dict[int, float],
@@ -138,7 +140,7 @@ class EdgeStrategy:
     def generate_orders(
         self,
         row: pd.Series,
-        prices: dict[int, float],
+        prices: MarketPrices,
         bin_probs: np.ndarray,
         bankroll: float,
         exposure: dict[int, float],
@@ -165,7 +167,7 @@ class EdgeStrategy:
         max_market_size = bankroll * self.max_per_market_pct
         
         # Evaluate each bin
-        for bin_id, market_price in prices.items():
+        for bin_id, market_price in prices.mid.items():
             model_prob = bin_probs[bin_id]
             
             # Skip extreme probabilities
@@ -259,7 +261,7 @@ class KellyStrategy:
     def generate_orders(
         self,
         row: pd.Series,
-        prices: dict[int, float],
+        prices: MarketPrices,
         bin_probs: np.ndarray,
         bankroll: float,
         exposure: dict[int, float],
@@ -271,7 +273,7 @@ class KellyStrategy:
         max_total_exposure = bankroll * self.max_total_pct
         max_market_size = bankroll * self.max_per_market_pct
         
-        for bin_id, market_price in prices.items():
+        for bin_id, market_price in prices.mid.items():
             model_prob = bin_probs[bin_id]
             edge = model_prob - market_price
             

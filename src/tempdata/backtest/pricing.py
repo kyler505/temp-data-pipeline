@@ -8,10 +8,19 @@ This module provides:
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
 import numpy as np
 import pandas as pd
+
+
+@dataclass(frozen=True)
+class MarketPrices:
+    """Bid/ask/mid prices for each bin."""
+    mid: dict[int, float]
+    bid: dict[int, float]
+    ask: dict[int, float]
 
 
 @runtime_checkable
@@ -26,7 +35,7 @@ class PriceProvider(Protocol):
         self,
         row: pd.Series,
         bin_probs: np.ndarray,
-    ) -> dict[int, float]:
+    ) -> MarketPrices:
         """Get market prices for each bin.
         
         Args:
@@ -34,7 +43,7 @@ class PriceProvider(Protocol):
             bin_probs: Model's predicted probabilities for each bin
             
         Returns:
-            Dictionary mapping bin_id to market price (0-1)
+            MarketPrices with mid/bid/ask quotes (0-1)
         """
         ...
 
@@ -78,7 +87,7 @@ class SyntheticPriceProvider:
         self,
         row: pd.Series,
         bin_probs: np.ndarray,
-    ) -> dict[int, float]:
+    ) -> MarketPrices:
         """Generate synthetic market prices.
         
         Args:
@@ -89,21 +98,27 @@ class SyntheticPriceProvider:
             Dictionary mapping bin_id to price
         """
         n_bins = len(bin_probs)
-        
+
         # Start with model probabilities as baseline
         baseline = bin_probs.copy()
-        
+
         # Add noise
         noise = self._rng.normal(0, self.noise_std, n_bins)
-        prices = baseline + noise
-        
+        mid = baseline + noise
+
         # Clip to valid range
-        prices = np.clip(prices, 0.01, 0.99)
-        
-        # Normalize to sum to 1 (markets should be efficient)
-        prices = prices / prices.sum()
-        
-        return {i: float(p) for i, p in enumerate(prices)}
+        mid = np.clip(mid, 0.01, 0.99)
+
+        # Normalize mid prices to sum to 1
+        mid = mid / mid.sum()
+
+        bid, ask = _apply_spread(mid, self.spread)
+
+        return MarketPrices(
+            mid=_to_price_dict(mid),
+            bid=_to_price_dict(bid),
+            ask=_to_price_dict(ask),
+        )
     
     def set_seed(self, seed: int) -> None:
         """Reset the random number generator with a new seed."""
@@ -120,11 +135,14 @@ class FixedSpreadPriceProvider:
     This is useful for testing strategy logic without market uncertainty.
     """
     
+    def __init__(self, spread: float = 0.0) -> None:
+        self.spread = spread
+
     def get_prices(
         self,
         row: pd.Series,
         bin_probs: np.ndarray,
-    ) -> dict[int, float]:
+    ) -> MarketPrices:
         """Return model probabilities as prices.
         
         Args:
@@ -134,7 +152,15 @@ class FixedSpreadPriceProvider:
         Returns:
             Dictionary mapping bin_id to probability/price
         """
-        return {i: float(p) for i, p in enumerate(bin_probs)}
+        mid = np.clip(bin_probs, 0.01, 0.99)
+        mid = mid / mid.sum()
+        bid, ask = _apply_spread(mid, self.spread)
+
+        return MarketPrices(
+            mid=_to_price_dict(mid),
+            bid=_to_price_dict(bid),
+            ask=_to_price_dict(ask),
+        )
 
 
 class AdversarialPriceProvider:
@@ -156,10 +182,12 @@ class AdversarialPriceProvider:
         self,
         noise_std: float = 0.03,
         market_edge: float = 0.2,
+        spread: float = 0.0,
         random_seed: int = 42,
     ) -> None:
         self.noise_std = noise_std
         self.market_edge = market_edge
+        self.spread = spread
         self._rng = np.random.default_rng(random_seed)
         self._true_outcomes: dict[str, int] = {}  # Cached true outcomes
     
@@ -176,7 +204,7 @@ class AdversarialPriceProvider:
         self,
         row: pd.Series,
         bin_probs: np.ndarray,
-    ) -> dict[int, float]:
+    ) -> MarketPrices:
         """Generate adversarial market prices.
         
         If true outcome is known, market price moves toward it.
@@ -209,11 +237,17 @@ class AdversarialPriceProvider:
         noise = self._rng.normal(0, self.noise_std, n_bins)
         prices = prices + noise
         
-        # Clip and normalize
-        prices = np.clip(prices, 0.01, 0.99)
-        prices = prices / prices.sum()
-        
-        return {i: float(p) for i, p in enumerate(prices)}
+        # Clip and normalize mid prices
+        mid = np.clip(prices, 0.01, 0.99)
+        mid = mid / mid.sum()
+
+        bid, ask = _apply_spread(mid, self.spread)
+
+        return MarketPrices(
+            mid=_to_price_dict(mid),
+            bid=_to_price_dict(bid),
+            ask=_to_price_dict(ask),
+        )
     
     def _get_row_key(self, row: pd.Series) -> str:
         """Generate unique key for a row."""
@@ -252,11 +286,24 @@ def create_price_provider(
             random_seed=random_seed,
         )
     elif price_type == "fixed":
-        return FixedSpreadPriceProvider()
+        return FixedSpreadPriceProvider(spread=spread)
     elif price_type == "adversarial":
         return AdversarialPriceProvider(
             noise_std=noise,
+            spread=spread,
             random_seed=random_seed,
         )
     else:
         raise ValueError(f"Unknown price_type: {price_type}")
+
+
+def _apply_spread(mid: np.ndarray, spread: float) -> tuple[np.ndarray, np.ndarray]:
+    """Apply a symmetric bid/ask spread around mid prices."""
+    half_spread = max(spread, 0.0) / 2
+    bid = np.clip(mid - half_spread, 0.01, 0.99)
+    ask = np.clip(mid + half_spread, 0.01, 0.99)
+    return bid, ask
+
+
+def _to_price_dict(values: np.ndarray) -> dict[int, float]:
+    return {i: float(p) for i, p in enumerate(values)}
