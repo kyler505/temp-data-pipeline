@@ -170,8 +170,20 @@ Examples:
 
 
 def load_data(args: argparse.Namespace, config: EvalConfig | None = None) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Load forecast and truth data from files or default locations."""
+    """Load forecast and truth data from files or default locations.
+
+    Implements hybrid data loading:
+    - Truth: ISD (before 2025-08-29) + GHCNh (from 2025-08-29 onward)
+    - Forecast: ERA5 (before 2016) + Open-Meteo (2016 onward)
+    - Automatic end-date buffering for ERA5T latency (~5 days)
+    """
+    from datetime import timedelta
     from tempdata.config import data_root
+
+    # Transition dates
+    ISD_CUTOFF = date(2025, 8, 29)
+    OPENMETEO_START = date(2016, 1, 1)
+    ERA5T_LATENCY_DAYS = 5
 
     station = args.station
     if station is None and config is not None and config.station_ids:
@@ -180,47 +192,136 @@ def load_data(args: argparse.Namespace, config: EvalConfig | None = None) -> tup
     if station is None and not (args.forecast_file and args.truth_file):
         raise ValueError("Station ID required (either via --station or config file)")
 
-    # Load forecasts
+    # Get date range from config
+    start_date = config.start_date_local if config else date.fromisoformat(args.start)
+    end_date = config.end_date_local if config else date.fromisoformat(args.end)
+
+    # --- Apply end-date buffering for data latency ---
+    today = date.today()
+    max_truth_date = today - timedelta(days=ERA5T_LATENCY_DAYS)
+    if end_date > max_truth_date:
+        print(f"[eval] Buffering end_date from {end_date} to {max_truth_date} for data latency")
+        end_date = max_truth_date
+        if config:
+            config.end_date_local = end_date
+
+    # --- Load Forecasts (Deep Historical: ERA5, Standard: Open-Meteo) ---
     if args.forecast_file:
         forecast_df = pd.read_parquet(args.forecast_file)
     else:
-        # Try default location
-        forecast_dir = data_root() / "clean" / "forecasts" / "openmeteo" / station
-        if not forecast_dir.exists():
-            forecast_dir = data_root() / "raw" / "forecasts" / "openmeteo" / station
+        forecast_dfs = []
 
-        if forecast_dir.exists():
-            parquet_files = list(forecast_dir.glob("*.parquet"))
-            if parquet_files:
-                forecast_df = pd.concat([pd.read_parquet(f) for f in parquet_files])
+        # ERA5 for pre-2016 dates
+        if start_date < OPENMETEO_START:
+            era5_end = min(end_date, OPENMETEO_START)
+            era5_dir = data_root() / "raw" / "era5" / station
+            if era5_dir.exists():
+                era5_files = list(era5_dir.glob("*.parquet"))
+                if era5_files:
+                    era5_df = pd.concat([pd.read_parquet(f) for f in era5_files])
+                    # Filter to date range
+                    era5_df["_date"] = pd.to_datetime(era5_df["ts_utc"]).dt.date
+                    era5_df = era5_df[(era5_df["_date"] >= start_date) & (era5_df["_date"] < era5_end)]
+                    era5_df = era5_df.drop(columns=["_date"])
+                    forecast_dfs.append(era5_df)
+                    print(f"[eval] Loaded {len(era5_df)} ERA5 rows for pre-2016 period")
             else:
-                raise FileNotFoundError(f"No parquet files in {forecast_dir}")
-        else:
+                print(f"[eval] WARNING: ERA5 dir not found: {era5_dir}. Run fetch_era5_hourly.py first.")
+
+        # Open-Meteo for 2016+
+        if end_date >= OPENMETEO_START:
+            om_start = max(start_date, OPENMETEO_START)
+            forecast_dir = data_root() / "clean" / "forecasts" / "openmeteo" / station
+            if not forecast_dir.exists():
+                forecast_dir = data_root() / "raw" / "forecasts" / "openmeteo" / station
+
+            if forecast_dir.exists():
+                om_files = list(forecast_dir.glob("*.parquet"))
+                if om_files:
+                    om_df = pd.concat([pd.read_parquet(f) for f in om_files])
+                    # Filter to date range
+                    if "target_date_local" in om_df.columns:
+                        om_df["_date"] = pd.to_datetime(om_df["target_date_local"]).dt.date
+                    else:
+                        om_df["_date"] = pd.to_datetime(om_df["issue_time_utc"]).dt.date
+                    om_df = om_df[(om_df["_date"] >= om_start) & (om_df["_date"] <= end_date)]
+                    om_df = om_df.drop(columns=["_date"])
+                    forecast_dfs.append(om_df)
+                    print(f"[eval] Loaded {len(om_df)} Open-Meteo rows for 2016+ period")
+            else:
+                print(f"[eval] WARNING: Open-Meteo dir not found: {forecast_dir}")
+
+        if not forecast_dfs:
             raise FileNotFoundError(
-                f"Forecast directory not found: {forecast_dir}\n"
+                f"No forecast data found for station {station}\n"
                 "Use --forecast-file to specify a file path"
             )
 
-    # Load truth
+        forecast_df = pd.concat(forecast_dfs, ignore_index=True)
+
+    # --- Load Truth (Legacy: ISD, Modern: GHCNh) ---
     if args.truth_file:
         truth_df = pd.read_parquet(args.truth_file)
     else:
-        # Try default location
-        truth_dir = data_root() / "clean" / "daily_tmax" / station
-        if not truth_dir.exists():
-            truth_dir = data_root() / "daily_tmax" / station
+        truth_dfs = []
 
-        if truth_dir.exists():
-            parquet_files = list(truth_dir.glob("*.parquet"))
-            if parquet_files:
-                truth_df = pd.concat([pd.read_parquet(f) for f in parquet_files])
-            else:
-                raise FileNotFoundError(f"No parquet files in {truth_dir}")
-        else:
+        # ISD for pre-2025-08-29
+        if start_date < ISD_CUTOFF:
+            isd_end = min(end_date, ISD_CUTOFF - timedelta(days=1))
+            isd_dir = data_root() / "clean" / "daily_tmax" / station
+            if not isd_dir.exists():
+                isd_dir = data_root() / "daily_tmax" / station
+
+            if isd_dir.exists():
+                # Look for ISD-sourced files (pattern: isd_*.parquet or *.parquet)
+                isd_files = list(isd_dir.glob("*.parquet"))
+                if isd_files:
+                    isd_df = pd.concat([pd.read_parquet(f) for f in isd_files])
+                    if "date_local" in isd_df.columns:
+                        isd_df["_date"] = pd.to_datetime(isd_df["date_local"]).dt.date
+                    elif "target_date_local" in isd_df.columns:
+                        isd_df["_date"] = pd.to_datetime(isd_df["target_date_local"]).dt.date
+                    else:
+                        isd_df["_date"] = start_date  # fallback
+                    isd_df = isd_df[(isd_df["_date"] >= start_date) & (isd_df["_date"] <= isd_end)]
+                    isd_df = isd_df.drop(columns=["_date"])
+                    truth_dfs.append(isd_df)
+                    print(f"[eval] Loaded {len(isd_df)} ISD truth rows for pre-Aug-2025")
+
+        # GHCNh for 2025-08-29+
+        if end_date >= ISD_CUTOFF:
+            ghcnh_start = max(start_date, ISD_CUTOFF)
+            ghcnh_dir = data_root() / "clean" / "daily_tmax" / station
+            if not ghcnh_dir.exists():
+                ghcnh_dir = data_root() / "daily_tmax" / station
+
+            if ghcnh_dir.exists():
+                # Look for GHCNh-sourced files
+                ghcnh_files = list(ghcnh_dir.glob("ghcnh_*.parquet"))
+                if not ghcnh_files:
+                    # Fallback: use all parquet files if no ghcnh_ prefix
+                    ghcnh_files = list(ghcnh_dir.glob("*.parquet"))
+
+                if ghcnh_files:
+                    ghcnh_df = pd.concat([pd.read_parquet(f) for f in ghcnh_files])
+                    if "date_local" in ghcnh_df.columns:
+                        ghcnh_df["_date"] = pd.to_datetime(ghcnh_df["date_local"]).dt.date
+                    elif "target_date_local" in ghcnh_df.columns:
+                        ghcnh_df["_date"] = pd.to_datetime(ghcnh_df["target_date_local"]).dt.date
+                    else:
+                        ghcnh_df["_date"] = ghcnh_start
+                    ghcnh_df = ghcnh_df[(ghcnh_df["_date"] >= ghcnh_start) & (ghcnh_df["_date"] <= end_date)]
+                    ghcnh_df = ghcnh_df.drop(columns=["_date"])
+                    truth_dfs.append(ghcnh_df)
+                    print(f"[eval] Loaded {len(ghcnh_df)} GHCNh truth rows for Aug-2025+")
+
+        if not truth_dfs:
             raise FileNotFoundError(
-                f"Truth directory not found: {truth_dir}\n"
+                f"No truth data found for station {station}\n"
                 "Use --truth-file to specify a file path"
             )
+
+        truth_df = pd.concat(truth_dfs, ignore_index=True)
 
     return forecast_df, truth_df
 

@@ -1,8 +1,8 @@
 {
   "run_name": "eval_klga_ridge_v1",
   "station_ids": ["KLGA"],
-  "start_date_local": "2021-01-01",
-  "end_date_local": "2025-08-26",
+  "start_date_local": "2015-01-01",
+  "end_date_local": "2025-01-01",
   "min_coverage_hours": 18,
   "lead_hours_allowed": null,
   "split": {
