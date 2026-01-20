@@ -222,6 +222,18 @@ def _ensure_features(df: pd.DataFrame) -> pd.DataFrame:
         if col not in df.columns:
             df[col] = 0.0
 
+    # Sort by station and date to ensure correct rolling/lag calculations
+    if "station_id" in df.columns and "target_date_local" in df.columns:
+        df = df.sort_values(["station_id", "target_date_local"])
+
+    # Lag features for persistence
+    if "tmax_actual_f_lag1" not in df.columns:
+        if "tmax_actual_f" in df.columns and "station_id" in df.columns:
+            df["tmax_actual_f_lag1"] = df.groupby("station_id")["tmax_actual_f"].shift(1)
+        # Fill NaN at the beginning with first available or 0?
+        # For persistence, we can backfill or leave NaNs (which will be handled/filled later)
+        # PersistenceForecaster fills na with 0.0.
+
     return df
 
 

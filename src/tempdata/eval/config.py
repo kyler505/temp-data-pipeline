@@ -43,12 +43,14 @@ class ModelConfig:
     """Configuration for the forecasting model.
 
     Attributes:
-        type: Model type ("passthrough" or "ridge")
+        type: Model type ("passthrough", "ridge", "persistence", "knn", "xgboost")
         alpha: Ridge regularization parameter
+        hyperparams: Dictionary of model hyperparameters
         features: List of feature column names
     """
-    type: Literal["passthrough", "ridge"] = "ridge"
+    type: Literal["passthrough", "ridge", "persistence", "knn", "xgboost"] = "ridge"
     alpha: float = 1.0
+    hyperparams: dict[str, Any] = field(default_factory=dict)
     features: list[str] = field(default_factory=lambda: [
         "tmax_pred_f", "sin_doy", "cos_doy", "bias_7d", "bias_14d"
     ])

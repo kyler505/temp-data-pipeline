@@ -1,39 +1,46 @@
 # Temp Data Pipeline
 
-A data pipeline for processing temperature data from NOAA with integrated temperature evaluation framework.
+A data pipeline for processing temperature data from NOAA (truth) and Open-Meteo (forecasts), with an integrated evaluation framework for assessing prediction accuracy.
 
 ## Quick Start
 
-### Data Pipeline
-The hourly fetcher uses the public NOAA Global Hourly (ISD) CSV dataset, so no API token is required. Station metadata is stored in `stations/stations.csv` and must include the USAF/WBAN identifiers.
+### 1. Installation
 
 ```bash
-python scripts/fetch_noaa_hourly.py --station KLGA --start 2024-01-01 --end 2024-02-01
+pip install -e ".[eval]"
 ```
 
-### Temperature Evaluation Framework
-Evaluate daily Tmax prediction quality with detailed metrics and diagnostics:
+### 2. Fetch Data
 
 ```bash
-# Install dependencies
-pip install -e ".[eval]"
+# Get ground truth (NOAA)
+python scripts/fetch_noaa_hourly.py --station KLGA --start 2020-01-01 --end 2024-12-31
 
-# Run evaluation from config
-python scripts/eval_daily_tmax.py --config configs/eval_klga_v1.json
+# Get forecasts (Open-Meteo)
+python scripts/fetch_openmeteo_daily_forecast.py --station KLGA --forecast-days 14
+```
 
-# Or with command line options
+### 3. Build Datasets
+
+```bash
+# Create daily max temperature from hourly observations
+python scripts/build_daily_tmax.py --station KLGA --timezone America/New_York
+```
+
+### 4. Run Evaluation
+
+```bash
+# Evaluate forecast accuracy
 python scripts/eval_daily_tmax.py --station KLGA --start 2020-01-01 --end 2024-12-31
 ```
 
-#### Evaluation Outputs
-Each run creates `runs/<run_id>/` with:
-- `config.json`: Frozen configuration
-- `meta.json`: Run metadata (git hash, timestamp)
-- `predictions.parquet`: Model predictions
-- `residuals.parquet`: Residual analysis
-- `metrics.json`: MAE, RMSE, bias, calibration
-- `slices.json`: Metrics by month/season/lead time
-
 ## Documentation
 
-- **[Colab Setup Guide](docs/COLAB_SETUP.md)** - Complete guide for running the pipeline in Google Colab with Google Drive integration for persistent data storage.
+Detailed guides are available in the `docs/` directory:
+
+1.  **[Data Acquisition](docs/1.%20data-acquisition.md)**: Fetching NOAA, ERA5, and Open-Meteo data.
+2.  **[Dataset Creation](docs/2.%20dataset-creation.md)**: Building analysis-ready temperature datasets.
+3.  **[Evaluation Framework](docs/3.%20evaluation.md)**: Running and configuring evaluation experiments.
+4.  **[Developer Guide](docs/4.%20developer-guide.md)**: Codebase structure, testing, and extension.
+
+For Colab users, see the **[Colab Setup Guide](docs/COLAB_SETUP.md)**.

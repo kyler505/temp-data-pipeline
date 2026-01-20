@@ -100,7 +100,7 @@ Examples:
     # Model arguments
     parser.add_argument(
         "--model-type",
-        choices=["ridge", "passthrough"],
+        choices=["ridge", "passthrough", "persistence", "knn"],
         default="ridge",
         help="Forecast model type (default: ridge)",
     )
