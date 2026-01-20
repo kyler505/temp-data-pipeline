@@ -241,7 +241,18 @@ def fetch_noaa_hourly(
         else:
             download_csv(url, csv_path, force=True, use_cache=False)
 
-        df = _parse_csv(csv_path, station)
+        try:
+            df = _parse_csv(csv_path, station)
+        except (pd.errors.EmptyDataError, pd.errors.ParserError):
+            print(f"[noaa] {year}: corrupted cache file found, deleting and retrying -> {csv_path}")
+            if csv_path.exists():
+                csv_path.unlink()
+
+            # Retry download (force=True to bypass cache check, though file is gone anyway)
+            download_csv(url, csv_path, force=True, use_cache=False)
+            # Retry parse (let it fail if it fails again)
+            df = _parse_csv(csv_path, station)
+
         df = df[(df["ts_utc"] >= start_dt) & (df["ts_utc"] < end_dt)].copy()
         if not df.empty:
             df.sort_values("ts_utc", inplace=True)

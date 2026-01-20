@@ -1,0 +1,25 @@
+{
+  "run_name": "eval_klga_ridge_v1",
+  "station_ids": ["KLGA"],
+  "start_date_local": "2021-01-01",
+  "end_date_local": "2025-08-26",
+  "min_coverage_hours": 18,
+  "lead_hours_allowed": null,
+  "split": {
+    "type": "static",
+    "train_frac": 0.70,
+    "val_frac": 0.15,
+    "test_frac": 0.15
+  },
+  "model": {
+    "type": "ridge",
+    "alpha": 1.0,
+    "features": ["tmax_pred_f", "sin_doy", "cos_doy", "bias_7d", "bias_14d"]
+  },
+  "uncertainty": {
+    "type": "bucketed",
+    "buckets": [[0, 36], [36, 72], [72, 120]],
+    "sigma_floor": 1.0
+  },
+  "random_seed": 42
+}

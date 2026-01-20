@@ -68,18 +68,22 @@ Leakage-free location corrections derived from `stations.csv`:
 
 (Optional interaction features with seasonality or lead time.)
 
-## Temperature backtesting framework
+## Temperature evaluation framework
 
 - Historical temperature loader (station-aligned)
-- Market simulator tied to **temperature bins** (e.g., Polymarket ranges)
 - Metrics focused on temperature accuracy:
     - MAE (°F)
     - RMSE
     - % within ±1°F / ±2°F
-    - Bin-hit accuracy (market-relevant)
+    - Calibration coverage (interval accuracy)
+- Sliced analysis:
+    - By month/season
+    - By lead time bucket
+    - By temperature regime
 - Visualization:
     - Error vs lead-time
     - Bias plots (systematic warm/cool error)
+    - Calibration diagrams
 
 ---
 
@@ -153,51 +157,27 @@ Leakage-free location corrections derived from `stations.csv`:
     - Bias direction (warm vs cool)
 - Dashboards:
     - Live MAE
-    - Bin miss frequency
+    - Error distribution over time
 - Alerts:
     - Sudden error spikes
     - Model disagreement beyond threshold
 
 ---
 
-# Phase 4: Temperature Market Trading Integration (3–4 weeks)
+# Phase 4: Testing & Optimization (2–3 weeks)
 
-## Polymarket temperature integration
-
-- Parse **temperature range markets only**
-- Convert predicted temperature distribution → bin probabilities
-- Map forecast uncertainty to market edge
-
-## Temperature-driven strategy logic
-
-- Entry logic:
-    - Trade only when predicted edge > transaction + uncertainty buffer
-- Position sizing:
-    - Scale by confidence (inverse variance)
-- Risk rules tied to temperature uncertainty, not PnL alone
-
-## Execution engine
-
-- Atomic order placement
-- Slippage and spread checks per bin
-- Automatic trade cancellation if forecast shifts > X°F
-
----
-
-# Phase 5: Testing & Optimization (2–3 weeks)
-
-## Temperature paper trading
+## Temperature evaluation runs
 
 - Run full system on historical + live temps
 - Track:
-    - Forecast error → trading outcome linkage
+    - Forecast error analysis
 - Diagnose:
     - Overconfidence in narrow ranges
-    - Systematic warm/cool bias leaks
+    - Systematic warm/cool bias
 
 ## Gradual deployment
 
-- Start with **single-station, single-market**
+- Start with **single-station**
 - A/B test:
     - Different uncertainty thresholds
     - Different ensemble weighting schemes
@@ -209,7 +189,7 @@ Leakage-free location corrections derived from `stations.csv`:
     - Feature definitions
     - Error interpretations
 - Logs:
-    - Raw temp → features → forecast → trade
+    - Raw temp → features → forecast
 - Performance dashboards tied directly to °F error
 
 ---
@@ -221,16 +201,13 @@ Leakage-free location corrections derived from `stations.csv`:
     Ensemble must achieve:
 
     - MAE ≤ 1.5°F (hourly) or ≤ 2°F (daily Tmax)
-    - ≥70% bin-hit accuracy on historical markets
+    - Calibrated 90% prediction intervals
+
 - **After Phase 3:**
 
     End-to-end temperature inference latency <500ms
 
-- **Phase 4 rollout:**
-
-    Max 1–2% capital per temperature market
-
-- **Phase 5 guardrails:**
+- **Phase 4 guardrails:**
 
     Halt if:
 
