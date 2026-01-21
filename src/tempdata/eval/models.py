@@ -206,11 +206,18 @@ class XGBoostForecaster:
 
         self.model = xgb.XGBRegressor(**self.params)
 
-    def fit(self, df_train: pd.DataFrame) -> None:
+    def fit(
+        self,
+        df_train: pd.DataFrame,
+        eval_set: list[pd.DataFrame] | None = None,
+        **kwargs: Any
+    ) -> None:
         """Fit the model on training data.
 
         Args:
             df_train: DataFrame with features and tmax_actual_f
+            eval_set: Optional list of validation DataFrames for early stopping
+            **kwargs: Additional arguments passed to XGBRegressor.fit
         """
         # Ensure all features exist
         available_features = [f for f in self.features if f in df_train.columns]
@@ -220,9 +227,20 @@ class XGBoostForecaster:
         X = df_train[available_features]
         y = df_train["tmax_actual_f"]
 
-        # Simple fit without validation sets for now, as validation is handled by the runner spliter
-        # In a more advanced setup, we could pass val set here for early_stopping
-        self.model.fit(X, y)
+        # Process eval_set if provided
+        fit_eval_set = []
+        if eval_set:
+            for df_eval in eval_set:
+                X_eval = df_eval[available_features]
+                y_eval = df_eval["tmax_actual_f"]
+                fit_eval_set.append((X_eval, y_eval))
+
+        self.model.fit(
+            X,
+            y,
+            eval_set=fit_eval_set if fit_eval_set else None,
+            **kwargs
+        )
 
     def predict_mu(self, df: pd.DataFrame) -> np.ndarray:
         """Predict point estimates (mu) for temperature.

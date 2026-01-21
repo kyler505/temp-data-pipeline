@@ -138,34 +138,55 @@ def fetch_era5_hourly(
 
     written: list[Path] = []
 
-    for year, month in _month_range(start_d, end_d):
-        # Determine days to fetch in this month
-        month_start = date(year, month, 1)
-        if month == 12:
-            month_end = date(year + 1, 1, 1)
-        else:
-            month_end = date(year, month + 1, 1)
+    written: list[Path] = []
 
-        # Clip to requested range
-        fetch_start = max(month_start, start_d)
-        fetch_end = min(month_end, end_d)
+    # Iterate by year to minimize queue wait time
+    # (One request per year is much faster than 12 requests)
+    current_year = start_d.year
+    final_year = end_d.year
 
-        if fetch_start >= fetch_end:
-            continue
+    # If end_d is Jan 1st of a year, that year is excluded (end_date is exclusive)
+    if end_d.month == 1 and end_d.day == 1:
+        final_year -= 1
 
-        days = list(range(fetch_start.day, fetch_end.day + 1))
-
+    for year in range(current_year, final_year + 1):
         # Check if output already exists
-        parquet_path = output_root / f"era5_{year:04d}_{month:02d}.parquet"
+        parquet_path = output_root / f"era5_{year:04d}.parquet"
         if parquet_path.exists() and not force:
-            print(f"[era5] {year}-{month:02d}: using cached {parquet_path}")
+            print(f"[era5] {year}: using cached {parquet_path}")
             written.append(parquet_path)
             continue
 
-        # Fetch from CDS
-        print(f"[era5] {year}-{month:02d}: fetching days {days[0]}-{days[-1]}...")
+        print(f"[era5] {year}: fetching full year...")
 
-        nc_path = output_root / f"era5_{year:04d}_{month:02d}.nc"
+        # Determine months and days to fetch
+        # For historical years, we want the whole year (months 1-12, days 1-31).
+        # We let CDS handle the "invalid" days like Feb 30 (it ignores them).
+
+        # However, for the *current* year (or very recent), we must respect availability.
+        max_avail_date = get_era5_availability_end()
+
+        # If the entire year is in the future, skip
+        if year > max_avail_date.year:
+            print(f"[era5] {year}: year is in the future (latest data: {max_avail_date})")
+            continue
+
+        months = [f"{m:02d}" for m in range(1, 13)]
+        days = [f"{d:02d}" for d in range(1, 32)]
+
+        # If this is the max available year, we might need to be careful?
+        # Actually, if we ask for future dates, CDS often returns error or empty.
+        # But 'reanalysis-era5-single-levels' usually fails if any requested date is not available.
+        # So for the current available year, we should only ask for available months.
+
+        if year == max_avail_date.year:
+            # Limit months to what is available
+            months = [f"{m:02d}" for m in range(1, max_avail_date.month + 1)]
+            # We assume we can ask for full days in those months (CDS is usually fine with that)
+            # worst case, the last month is partial.
+            print(f"[era5] {year}: fetching partial year (up to {max_avail_date})")
+
+        nc_path = output_root / f"era5_{year:04d}.nc"
 
         try:
             client.retrieve(
@@ -174,8 +195,8 @@ def fetch_era5_hourly(
                     "product_type": "reanalysis",
                     "variable": "2m_temperature",
                     "year": str(year),
-                    "month": f"{month:02d}",
-                    "day": [f"{d:02d}" for d in days],
+                    "month": months,
+                    "day": days,
                     "time": [f"{h:02d}:00" for h in range(24)],
                     "area": area,
                     "format": "netcdf",
@@ -183,17 +204,19 @@ def fetch_era5_hourly(
                 str(nc_path),
             )
         except Exception as e:
-            print(f"[era5] {year}-{month:02d}: fetch failed: {e}")
+            print(f"[era5] {year}: fetch failed: {e}")
             continue
 
         # Parse NetCDF to DataFrame
         df = _parse_era5_netcdf(nc_path, station)
 
-        # Filter to exact date range
-        df = df[
-            (df["ts_utc"] >= pd.Timestamp(fetch_start, tz="UTC")) &
-            (df["ts_utc"] < pd.Timestamp(fetch_end, tz="UTC"))
-        ]
+        # Filter strictly to the requested start/end range?
+        # Pro: Keeps data clean.
+        # Con: If user continually shifts start_date, we might want to keep the whole year cached.
+        # Decision: Keep the WHOLE year in the parquet file (cached),
+        # but the caller will filter what they need.
+        # However, for the very first/last year of the request, we might have fetched more than "requested"
+        # but that's good for caching.
 
         if not df.empty:
             df.sort_values("ts_utc", inplace=True)
@@ -213,7 +236,7 @@ def fetch_era5_hourly(
         if nc_path.exists():
             nc_path.unlink()
 
-        print(f"[era5] {year}-{month:02d}: wrote {len(df)} rows -> {parquet_path}")
+        print(f"[era5] {year}: wrote {len(df)} rows -> {parquet_path}")
 
     return written
 
@@ -258,10 +281,12 @@ def _parse_with_xarray(nc_path: Path, station: StationMeta) -> pd.DataFrame:
     df = temp.to_dataframe().reset_index()
 
     # Rename columns
-    df = df.rename(columns={
+    rename_map = {
         "time": "ts_utc",
+        "valid_time": "ts_utc",
         temp_var: "temp_k",
-    })
+    }
+    df = df.rename(columns=rename_map)
 
     # Convert Kelvin to Celsius
     df["temp_c"] = df["temp_k"] - 273.15

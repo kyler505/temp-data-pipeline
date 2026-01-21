@@ -18,6 +18,7 @@
   "model": {
     "type": "knn",
     "alpha": 1.0,
+    "hyperparams": {},
     "features": [
       "tmax_pred_f",
       "sin_doy",

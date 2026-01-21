@@ -1,0 +1,165 @@
+{
+  "forecast": {
+    "n_samples": 549,
+    "mae": 2.5718,
+    "rmse": 4.7381,
+    "bias": 0.002,
+    "std_error": 4.7381,
+    "r2": 0.9029
+  },
+  "calibration": {
+    "coverage_50": 0.7177,
+    "coverage_80": 0.8798,
+    "coverage_90": 0.9381,
+    "mean_sigma": 5.6111,
+    "sharpness_50": 7.5693,
+    "sharpness_80": 14.3819,
+    "sharpness_90": 18.4589
+  },
+  "slices": {
+    "by_month": {
+      "4": {
+        "n_samples": 59,
+        "mae": 4.1441,
+        "rmse": 7.1231,
+        "bias": -0.1339,
+        "std_error": 7.1218,
+        "r2": 0.4482
+      },
+      "5": {
+        "n_samples": 62,
+        "mae": 3.1742,
+        "rmse": 5.5085,
+        "bias": -0.2258,
+        "std_error": 5.5038,
+        "r2": 0.6059
+      },
+      "6": {
+        "n_samples": 60,
+        "mae": 2.1617,
+        "rmse": 3.8004,
+        "bias": -0.2017,
+        "std_error": 3.795,
+        "r2": 0.6082
+      },
+      "7": {
+        "n_samples": 62,
+        "mae": 1.3855,
+        "rmse": 2.4651,
+        "bias": -0.0629,
+        "std_error": 2.4643,
+        "r2": 0.6813
+      },
+      "8": {
+        "n_samples": 62,
+        "mae": 2.3565,
+        "rmse": 4.5026,
+        "bias": 0.1758,
+        "std_error": 4.4991,
+        "r2": 0.4596
+      },
+      "9": {
+        "n_samples": 60,
+        "mae": 1.745,
+        "rmse": 2.9722,
+        "bias": 0.1683,
+        "std_error": 2.9675,
+        "r2": 0.6539
+      },
+      "10": {
+        "n_samples": 62,
+        "mae": 1.9903,
+        "rmse": 3.6326,
+        "bias": -0.1935,
+        "std_error": 3.6274,
+        "r2": 0.6986
+      },
+      "11": {
+        "n_samples": 60,
+        "mae": 3.2083,
+        "rmse": 5.6141,
+        "bias": 0.7017,
+        "std_error": 5.5701,
+        "r2": 0.6866
+      },
+      "12": {
+        "n_samples": 62,
+        "mae": 3.0371,
+        "rmse": 5.2524,
+        "bias": -0.1952,
+        "std_error": 5.2488,
+        "r2": 0.6714
+      }
+    },
+    "by_season": {
+      "DJF": {
+        "n_samples": 62,
+        "mae": 3.0371,
+        "rmse": 5.2524,
+        "bias": -0.1952,
+        "std_error": 5.2488,
+        "r2": 0.6714
+      },
+      "MAM": {
+        "n_samples": 121,
+        "mae": 3.6471,
+        "rmse": 6.3473,
+        "bias": -0.181,
+        "std_error": 6.3447,
+        "r2": 0.6585
+      },
+      "JJA": {
+        "n_samples": 184,
+        "mae": 1.9658,
+        "rmse": 3.6862,
+        "bias": -0.0277,
+        "std_error": 3.6861,
+        "r2": 0.5861
+      },
+      "SON": {
+        "n_samples": 182,
+        "mae": 2.311,
+        "rmse": 4.2188,
+        "bias": 0.2209,
+        "std_error": 4.213,
+        "r2": 0.8253
+      }
+    },
+    "by_lead_bucket": {
+      "24-48h": {
+        "n_samples": 549,
+        "mae": 2.5718,
+        "rmse": 4.7381,
+        "bias": 0.002,
+        "std_error": 4.7381,
+        "r2": 0.9029
+      }
+    },
+    "by_temp_regime": {
+      "cold (<59\u00b0F)": {
+        "n_samples": 131,
+        "mae": 3.1176,
+        "rmse": 5.474,
+        "bias": 1.2107,
+        "std_error": 5.3385,
+        "r2": 0.5645
+      },
+      "normal (59-82\u00b0F)": {
+        "n_samples": 288,
+        "mae": 2.6458,
+        "rmse": 4.9055,
+        "bias": -0.0667,
+        "std_error": 4.905,
+        "r2": 0.4955
+      },
+      "hot (>82\u00b0F)": {
+        "n_samples": 130,
+        "mae": 1.8577,
+        "rmse": 3.3615,
+        "bias": -1.0638,
+        "std_error": 3.1888,
+        "r2": 0.167
+      }
+    }
+  }
+}

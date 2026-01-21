@@ -1,0 +1,36 @@
+{
+  "run_name": "dev_persistence",
+  "station_ids": [
+    "KLGA"
+  ],
+  "start_date_local": "2020-01-01",
+  "end_date_local": "2024-12-31",
+  "min_coverage_hours": 18,
+  "lead_hours_allowed": null,
+  "split": {
+    "type": "static",
+    "train_frac": 0.7,
+    "val_frac": 0.15,
+    "test_frac": 0.15,
+    "window_size": null,
+    "step_size": null
+  },
+  "model": {
+    "type": "persistence",
+    "alpha": 1.0,
+    "hyperparams": {},
+    "features": [
+      "tmax_pred_f",
+      "sin_doy",
+      "cos_doy",
+      "bias_7d",
+      "bias_14d"
+    ]
+  },
+  "uncertainty": {
+    "type": "bucketed",
+    "buckets": null,
+    "sigma_floor": 1.0
+  },
+  "random_seed": 42
+}

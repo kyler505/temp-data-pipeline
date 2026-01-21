@@ -1,0 +1,13 @@
+{
+  "run_id": "20260121_173246",
+  "run_name": "Multi-Model Eval 20260121_173246",
+  "git_commit": "55e7d260",
+  "python_version": "3.12.8 (main, Dec  3 2024, 18:42:41) [Clang 16.0.0 (clang-1600.0.26.4)]",
+  "timestamp_utc": "2026-01-21T23:32:47.009311",
+  "is_multi_model": true,
+  "model_names": [
+    "Persistence",
+    "Ridge",
+    "kNN (k=50)"
+  ]
+}

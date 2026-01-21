@@ -40,9 +40,14 @@ from tempdata.eval.report import (
     create_run_dir,
     write_all_artifacts,
     load_run,
+    load_multi_model_run,
     list_runs,
 )
-from tempdata.eval.runner import run_evaluation
+from tempdata.eval.runner import (
+    run_evaluation,
+    run_multi_model_evaluation,
+    MultiModelEvalResult,
+)
 from tempdata.eval.slicing import compute_metrics_by_slice
 from tempdata.eval.splits import create_split, StaticSplit, WalkForwardSplit
 from tempdata.eval.uncertainty import (
@@ -83,9 +88,13 @@ __all__ = [
     "compute_metrics_by_slice",
     # Report
     "create_run_dir",
-    "write_all_artifacts",
     "load_run",
+    "load_multi_model_run",
     "list_runs",
+    "write_all_artifacts",
+    "create_run_dir",
     # Runner
     "run_evaluation",
+    "run_multi_model_evaluation",
+    "MultiModelEvalResult",
 ]

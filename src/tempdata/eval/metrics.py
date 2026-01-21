@@ -33,16 +33,20 @@ class ForecastMetrics:
     rmse: float
     bias: float
     std_error: float
+    r2: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary."""
-        return {
+        d = {
             "n_samples": self.n_samples,
             "mae": round(self.mae, 4),
             "rmse": round(self.rmse, 4),
             "bias": round(self.bias, 4),
             "std_error": round(self.std_error, 4),
         }
+        if self.r2 is not None:
+            d["r2"] = round(self.r2, 4)
+        return d
 
 
 @dataclass
@@ -119,12 +123,18 @@ def compute_forecast_metrics(predictions_df: pd.DataFrame) -> ForecastMetrics:
     abs_errors = np.abs(errors)
     sq_errors = errors ** 2
 
+    # R2 calculation
+    ss_res = np.sum(sq_errors)
+    ss_tot = np.sum((y_true - np.mean(y_true)) ** 2)
+    r2 = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0.0
+
     return ForecastMetrics(
         n_samples=len(y_true),
         mae=float(np.mean(abs_errors)),
         rmse=float(np.sqrt(np.mean(sq_errors))),
         bias=float(np.mean(errors)),
         std_error=float(np.std(errors)),
+        r2=float(r2),
     )
 
 
