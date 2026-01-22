@@ -22,23 +22,35 @@ This guide explains how to set up and run the NOAA hourly data pipeline in Googl
 
 ---
 
-## Quick Start
+## Quick Start (Automated Setup)
 
-### Minimal Setup (No Drive)
+The easiest way to run the pipeline in Colab is using the **Bootstrap Utility**. This single cell handles cloning/syncing, dependency installation, and persistent storage in Google Drive.
 
-```python
-# Clone repository
-!git clone https://github.com/YOUR_USERNAME/temp-data-pipeline.git
+1.  Open a new notebook in Colab.
+2.  Mount Drive and clone the repo if you haven't already (one time setup):
+    ```python
+    from google.colab import drive
+    drive.mount('/content/drive')
+    %cd /content/drive/MyDrive
+    !git clone https://github.com/kyler505/temp-data-pipeline.git
+    ```
+3.  In every notebook session, run this **Bootstrap Cell**:
+    ```python
+    import sys
+    import os
 
-# Install dependencies
-!cd temp-data-pipeline && pip install -e .
+    # 1. Add repo to path
+    REPO_PATH = "/content/drive/MyDrive/temp-data-pipeline"
+    sys.path.append(REPO_PATH)
+    os.chdir(REPO_PATH)
 
-# Run fetcher
-!cd temp-data-pipeline && python scripts/fetch_noaa_hourly.py \
-  --station KLGA --start 2024-01-01 --end 2024-02-01
-```
+    # 2. Sync and Setup
+    !git pull  # Ensure we have the latest helper
+    from tempdata.utils.colab import bootstrap
+    bootstrap(use_wandb=True)
+    ```
 
-**Note:** Data will be lost when the Colab session ends.
+**Note:** The `bootstrap()` function automatically configures the pipeline to save all data and models directly to your Google Drive.
 
 ---
 
