@@ -88,20 +88,33 @@ def bootstrap(
     try:
         # Check if we are in a git repo
         if (workspace_path / ".git").exists():
-            result = subprocess.run(
-                ["git", "pull"],
-                check=False,
-                capture_output=True,
-                text=True
+            # Try to get current branch name
+            branch_res = subprocess.run(
+                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                capture_output=True, text=True
             )
-            if result.returncode == 0:
-                print("[colab] ✓ Git pull successful.")
+            branch = branch_res.stdout.strip()
+
+            if branch == "HEAD":
+                print("[colab] ℹ Detached HEAD detected. Attempting pull from origin main/master...")
+                # Try common names
+                subprocess.run(["git", "pull", "origin", "main"], check=False, capture_output=True)
+                subprocess.run(["git", "pull", "origin", "master"], check=False, capture_output=True)
             else:
-                print(f"[colab] ⚠ Git pull warning: {result.stderr.strip()}")
+                result = subprocess.run(
+                    ["git", "pull", "origin", branch],
+                    check=False,
+                    capture_output=True,
+                    text=True
+                )
+                if result.returncode == 0:
+                    print(f"[colab] ✓ Git pull successful (branch: {branch}).")
+                else:
+                    print(f"[colab] ℹ Git pull: {result.stderr.strip() or 'Already up to date.'}")
         else:
             print("[colab] ⚠ Not a git repository, skipping sync.")
     except Exception as e:
-        print(f"[colab] ⚠ Git sync failed: {e}")
+        print(f"[colab] ℹ Git sync skipped or failed: {e}")
 
     # 5. Install Dependencies and Package in editable mode
     if install_deps:
