@@ -36,16 +36,25 @@ The easiest way to run the pipeline in Colab is using the **Bootstrap Utility**.
     ```
 3.  In every notebook session, run this **Bootstrap Cell**:
     ```python
-    import sys
     import os
+    import sys
+    from pathlib import Path
 
-    # 1. Add repo to path
-    REPO_PATH = "/content/drive/MyDrive/temp-data-pipeline"
-    sys.path.append(REPO_PATH)
-    os.chdir(REPO_PATH)
+    # 1. Mount Drive
+    from google.colab import drive
+    drive.mount('/content/drive')
 
-    # 2. Sync and Setup
-    !git pull  # Ensure we have the latest helper
+    # 2. Add repo to path and sync
+    REPO_PATH = Path("/content/drive/MyDrive/temp-data-pipeline")
+    if REPO_PATH.exists():
+        os.chdir(REPO_PATH)
+        !git pull
+        if str(REPO_PATH) not in sys.path:
+            sys.path.insert(0, str(REPO_PATH))
+    else:
+        print(f"Error: {REPO_PATH} not found. Clone it first (see Step 2).")
+
+    # 3. Securely import and run bootstrap
     from tempdata.utils.colab import bootstrap
     bootstrap(use_wandb=True)
     ```

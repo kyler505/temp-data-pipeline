@@ -44,7 +44,19 @@ def bootstrap(
     print(f"COLAB BOOTSTRAP: {project_name}")
     print(f"{'='*60}")
 
-    # 2. Mount Google Drive
+    # 2. Fix Python 3.12 compatibility (imp module removal)
+    # Python 3.12 removed 'imp', but some versions of IPython's autoreload still use it.
+    try:
+        import imp
+    except ImportError:
+        print("[colab] Applying 'imp' module shim for Python 3.12 compatibility...")
+        from types import ModuleType
+        import importlib
+        imp_shim = ModuleType("imp")
+        imp_shim.reload = importlib.reload
+        sys.modules["imp"] = imp_shim
+
+    # 3. Mount Google Drive
     print(f"[colab] Mounting Google Drive to {drive_mount}...")
     try:
         drive.mount(drive_mount, force_remount=False)
