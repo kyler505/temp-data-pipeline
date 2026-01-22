@@ -88,17 +88,49 @@ def bootstrap(
     try:
         # Check if we are in a git repo
         if (workspace_path / ".git").exists():
-            # Simply pull from origin main as requested
+            # Robust pull: try to clear common lock files if they exist
+            # This handles the "cannot lock ref" issues seen in Colab/Drive
+            lock_files = [
+                workspace_path / ".git" / "refs" / "remotes" / "origin" / "main.lock",
+                workspace_path / ".git" / "FETCH_HEAD.lock",
+                workspace_path / ".git" / "index.lock"
+            ]
+            for lock in lock_files:
+                if lock.exists():
+                    print(f"[colab] ℹ Clearing stale git lock: {lock.name}")
+                    lock.unlink()
+
+    print("[colab] Syncing code with repository (fetch + hard reset to main)...")
+    try:
+        # Check if we are in a git repo
+        if (workspace_path / ".git").exists():
+            # Robust pull: try to clear common lock files if they exist
+            lock_files = [
+                workspace_path / ".git" / "refs" / "remotes" / "origin" / "main.lock",
+                workspace_path / ".git" / "FETCH_HEAD.lock",
+                workspace_path / ".git" / "index.lock"
+            ]
+            for lock in lock_files:
+                if lock.exists():
+                    print(f"[colab] ℹ Clearing stale git lock: {lock.name}")
+                    lock.unlink()
+
+            # 1. Fetch latest changes from origin
+            subprocess.run(["git", "fetch", "origin", "main"], check=True, capture_output=True)
+
+            # 2. Hard reset to origin/main
+            # This ensures we match remote exactly, regardless of detached HEAD or local changes
             result = subprocess.run(
-                ["git", "pull", "origin", "main"],
+                ["git", "reset", "--hard", "origin/main"],
                 check=False,
                 capture_output=True,
                 text=True
             )
+
             if result.returncode == 0:
-                print("[colab] ✓ Git pull from main successful.")
+                print("[colab] ✓ Environment synchronized to origin/main.")
             else:
-                print(f"[colab] ℹ Git pull: {result.stderr.strip() or 'Already up to date.'}")
+                print(f"[colab] ℹ Sync notice: {result.stderr.strip()}")
         else:
             print("[colab] ⚠ Not a git repository, skipping sync.")
     except Exception as e:
