@@ -84,33 +84,21 @@ def bootstrap(
     print(f"[colab] ✓ Working directory: {os.getcwd()}")
 
     # 4. Sync Git (Pull latest changes)
-    print("[colab] Syncing code with repository (git pull)...")
+    print("[colab] Syncing code with repository (git pull origin main)...")
     try:
         # Check if we are in a git repo
         if (workspace_path / ".git").exists():
-            # Try to get current branch name
-            branch_res = subprocess.run(
-                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-                capture_output=True, text=True
+            # Simply pull from origin main as requested
+            result = subprocess.run(
+                ["git", "pull", "origin", "main"],
+                check=False,
+                capture_output=True,
+                text=True
             )
-            branch = branch_res.stdout.strip()
-
-            if branch == "HEAD":
-                print("[colab] ℹ Detached HEAD detected. Attempting pull from origin main/master...")
-                # Try common names
-                subprocess.run(["git", "pull", "origin", "main"], check=False, capture_output=True)
-                subprocess.run(["git", "pull", "origin", "master"], check=False, capture_output=True)
+            if result.returncode == 0:
+                print("[colab] ✓ Git pull from main successful.")
             else:
-                result = subprocess.run(
-                    ["git", "pull", "origin", branch],
-                    check=False,
-                    capture_output=True,
-                    text=True
-                )
-                if result.returncode == 0:
-                    print(f"[colab] ✓ Git pull successful (branch: {branch}).")
-                else:
-                    print(f"[colab] ℹ Git pull: {result.stderr.strip() or 'Already up to date.'}")
+                print(f"[colab] ℹ Git pull: {result.stderr.strip() or 'Already up to date.'}")
         else:
             print("[colab] ⚠ Not a git repository, skipping sync.")
     except Exception as e:
