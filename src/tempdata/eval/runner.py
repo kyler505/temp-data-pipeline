@@ -226,6 +226,7 @@ def _evaluate_model(
     """
     from tempdata.eval.metrics import (
         EvalMetrics,
+        compute_accuracy_bands,
         compute_calibration_metrics,
         compute_forecast_metrics,
         print_metrics_summary,
@@ -264,7 +265,14 @@ def _evaluate_model(
     # Calibration metrics if sigma is available
     calibration_metrics = None
     if "y_pred_sigma_f" in predictions_df.columns:
-        calibration_metrics = compute_calibration_metrics(predictions_df)
+        try:
+            calibration_metrics = compute_calibration_metrics(predictions_df)
+        except ImportError:
+            if verbose:
+                print("[eval] Skipping calibration metrics: scipy not installed")
+
+    # Accuracy band metrics
+    accuracy_bands = compute_accuracy_bands(predictions_df)
 
     # Sliced metrics
     slices = compute_metrics_by_slice(predictions_df)
@@ -272,6 +280,7 @@ def _evaluate_model(
     metrics = EvalMetrics(
         forecast=forecast_metrics,
         calibration=calibration_metrics,
+        accuracy_bands=accuracy_bands,
         slices=slices,
     )
 
@@ -401,3 +410,180 @@ def run_multi_model_evaluation(
         results=results,
         comparison=comparison,
     )
+
+def run_walk_forward_evaluation(
+    config: "EvalConfig",
+    forecast_df: pd.DataFrame,
+    truth_df: pd.DataFrame,
+    feature_df: pd.DataFrame | None = None,
+    run_id: str | None = None,
+    output_dir: Path | None = None,
+    verbose: bool = True,
+) -> "MultiModelEvalResult":
+    """Run walk-forward cross-validation evaluation.
+
+    Uses WalkForwardSplit.generate_folds() to evaluate across all folds,
+    then aggregates metrics. Each fold trains on a window and tests on the
+    next step_size days.
+
+    Args:
+        config: Evaluation configuration (split.type must be "walk_forward")
+        forecast_df: Forecast data
+        truth_df: Truth data
+        feature_df: Optional pre-built features
+        run_id: Optional run ID
+        output_dir: Optional output directory
+        verbose: Whether to print progress
+
+    Returns:
+        MultiModelEvalResult with per-fold results and aggregated metrics
+    """
+    from tempdata.eval.config import generate_run_id
+    from tempdata.eval.data import load_eval_data, _normalize_eval_dates, _ensure_features, _join_forecast_truth
+    from tempdata.eval.metrics import (
+        EvalMetrics,
+        compute_accuracy_bands,
+        compute_calibration_metrics,
+        compute_forecast_metrics,
+    )
+    from tempdata.eval.models import create_forecaster
+    from tempdata.eval.report import create_run_dir, write_model_artifacts, write_run_metadata, write_comparison_summary
+    from tempdata.eval.slicing import compute_metrics_by_slice
+    from tempdata.eval.splits import WalkForwardSplit
+
+    if config.split.type != "walk_forward":
+        raise ValueError("run_walk_forward_evaluation requires split.type='walk_forward'")
+
+    if config.split.window_size is None or config.split.step_size is None:
+        raise ValueError("walk_forward requires window_size and step_size")
+
+    if run_id is None:
+        run_id = generate_run_id()
+
+    # Load and prepare data (same as load_eval_data but without splitting)
+    if feature_df is not None:
+        df = feature_df.copy()
+    else:
+        df = _join_forecast_truth(forecast_df, truth_df)
+
+    df = _normalize_eval_dates(df)
+    df = _ensure_features(df)
+    df = df.sort_values(["station_id", "target_date_local"]).reset_index(drop=True)
+
+    # Generate folds
+    splitter = WalkForwardSplit(
+        window_size=config.split.window_size,
+        step_size=config.split.step_size,
+    )
+    folds = splitter.generate_folds(df)
+
+    if verbose:
+        print(f"\n{'=' * 60}")
+        print(f"WALK-FORWARD EVALUATION: {run_id}")
+        print(f"Folds: {len(folds)}")
+        print(f"Window: {config.split.window_size}d, Step: {config.split.step_size}d")
+        print(f"Model: {config.model.type}")
+        print(f"{'=' * 60}\n")
+
+    # Create run directory
+    run_dir = create_run_dir(run_id, base_path=output_dir)
+    write_run_metadata(
+        run_id=run_id,
+        run_name=f"Walk-Forward {config.model.type}",
+        model_names=[f"fold_{i}" for i in range(len(folds))],
+        base_path=output_dir,
+    )
+
+    fold_results = {}
+
+    for i, (train_df, test_df) in enumerate(folds):
+        if verbose:
+            print(f"--- Fold {i+1}/{len(folds)}: train={len(train_df)}, test={len(test_df)} ---")
+
+        # Create and fit model
+        forecaster = create_forecaster(
+            model_type=config.model.type,
+            alpha=config.model.alpha,
+            features=config.model.features,
+        )
+        forecaster.fit(train_df)
+
+        # Generate predictions
+        predictions_df = test_df.copy()
+        predictions_df["y_pred_f"] = forecaster.predict_mu(test_df)
+        predictions_df["y_true_f"] = test_df["tmax_actual_f"].values
+
+        # Compute metrics
+        forecast_metrics = compute_forecast_metrics(predictions_df)
+        accuracy_bands = compute_accuracy_bands(predictions_df)
+
+        calibration_metrics = None
+        if "y_pred_sigma_f" in predictions_df.columns:
+            try:
+                calibration_metrics = compute_calibration_metrics(predictions_df)
+            except ImportError:
+                pass
+
+        slices = compute_metrics_by_slice(predictions_df)
+
+        metrics = EvalMetrics(
+            forecast=forecast_metrics,
+            calibration=calibration_metrics,
+            accuracy_bands=accuracy_bands,
+            slices=slices,
+        )
+
+        # Write fold artifacts
+        fold_name = f"fold_{i}"
+        artifacts = write_model_artifacts(
+            model_name=fold_name,
+            config=config,
+            metrics=metrics,
+            predictions_df=predictions_df,
+            run_id=run_id,
+            base_path=output_dir,
+        )
+
+        fold_results[fold_name] = EvalResult(
+            run_id=run_id,
+            config=config,
+            predictions_df=predictions_df,
+            metrics=metrics,
+            artifacts=artifacts,
+        )
+
+        if verbose:
+            fm = metrics.forecast
+            ab = metrics.accuracy_bands
+            print(f"  MAE={fm.mae:.2f} RMSE={fm.rmse:.2f} R2={fm.r2:.3f}")
+            if ab:
+                print(f"  +/-1F: {100*ab.within_1f:.1f}%  +/-2F: {100*ab.within_2f:.1f}%")
+
+    # Aggregate fold metrics
+    summary_data = {}
+    for name, res in fold_results.items():
+        summary_data[name] = {"metrics": res.metrics.to_dict()}
+
+    comparison = write_comparison_summary(
+        run_id=run_id,
+        model_results=summary_data,
+        base_path=output_dir,
+    )
+
+    # Print aggregate
+    if verbose and fold_results:
+        maes = [r.metrics.forecast.mae for r in fold_results.values()]
+        rmses = [r.metrics.forecast.rmse for r in fold_results.values()]
+        print(f"\n{'=' * 60}")
+        print(f"AGGREGATE ({len(folds)} folds)")
+        print(f"  MAE:  {sum(maes)/len(maes):.2f} (range: {min(maes):.2f} - {max(maes):.2f})")
+        print(f"  RMSE: {sum(rmses)/len(rmses):.2f} (range: {min(rmses):.2f} - {max(rmses):.2f})")
+        print(f"{'=' * 60}")
+
+    return MultiModelEvalResult(
+        run_id=run_id,
+        run_path=run_dir,
+        results=fold_results,
+        comparison=comparison,
+    )
+

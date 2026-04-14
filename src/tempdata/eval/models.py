@@ -16,9 +16,6 @@ from dataclasses import dataclass, field
 
 import numpy as np
 import pandas as pd
-from sklearn.linear_model import Ridge
-from sklearn.neighbors import KNeighborsRegressor
-import xgboost as xgb
 
 
 @runtime_checkable
@@ -131,6 +128,8 @@ class RidgeForecaster:
             X = X[mask]
             y = y[mask]
 
+        from sklearn.linear_model import Ridge
+
         self.model = Ridge(alpha=self.alpha)
         self.model.fit(X, y)
 
@@ -204,7 +203,7 @@ class XGBoostForecaster:
         if hyperparams:
             self.params.update(hyperparams)
 
-        self.model = xgb.XGBRegressor(**self.params)
+        self.model = None
 
     def fit(
         self,
@@ -224,8 +223,13 @@ class XGBoostForecaster:
         if not available_features:
             raise ValueError(f"None of the requested features {self.features} are in the dataframe used for training.")
 
+        import xgboost as xgb
+
         X = df_train[available_features]
         y = df_train["tmax_actual_f"]
+
+        if self.model is None:
+            self.model = xgb.XGBRegressor(**self.params)
 
         # Process eval_set if provided
         fit_eval_set = []
@@ -235,12 +239,14 @@ class XGBoostForecaster:
                 y_eval = df_eval["tmax_actual_f"]
                 fit_eval_set.append((X_eval, y_eval))
 
-        self.model.fit(
-            X,
-            y,
-            eval_set=fit_eval_set if fit_eval_set else None,
-            **kwargs
-        )
+        fit_kwargs = {}
+        if fit_eval_set:
+            fit_kwargs["eval_set"] = fit_eval_set
+        else:
+            # Disable early stopping when no eval set available
+            self.model.set_params(early_stopping_rounds=None)
+
+        self.model.fit(X, y, **fit_kwargs, **kwargs)
 
     def predict_mu(self, df: pd.DataFrame) -> np.ndarray:
         """Predict point estimates (mu) for temperature.
@@ -251,6 +257,9 @@ class XGBoostForecaster:
         Returns:
             Array of predicted temperatures
         """
+        if self.model is None:
+            raise RuntimeError("Model not fitted")
+
         available_features = [f for f in self.features if f in df.columns]
         if not available_features:
              raise ValueError(f"None of the requested features {self.features} are in the dataframe used for prediction.")
@@ -349,12 +358,12 @@ class KNNForecaster:
         self.model = None
 
     def fit(self, df_train: pd.DataFrame) -> None:
-        from sklearn.neighbors import KNeighborsRegressor
-
         X = self._prepare_features(df_train)
         y = df_train["tmax_actual_f"].values
 
         X = np.nan_to_num(X, nan=0.0)
+
+        from sklearn.neighbors import KNeighborsRegressor
 
         self.model = KNeighborsRegressor(n_neighbors=self.n_neighbors)
 

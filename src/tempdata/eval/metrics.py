@@ -10,7 +10,7 @@ No trading metrics (PnL, Sharpe, etc.) - pure temperature evaluation.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
 import numpy as np
@@ -47,6 +47,22 @@ class ForecastMetrics:
         if self.r2 is not None:
             d["r2"] = round(self.r2, 4)
         return d
+
+
+@dataclass
+class AccuracyBandMetrics:
+    """Simple accuracy-band coverage metrics.
+
+    Reports the fraction of predictions within +/-N degrees F of actual.
+    """
+    within_1f: float
+    within_2f: float
+    within_3f: float
+    within_5f: float
+    n_samples: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
 
 
 @dataclass
@@ -91,6 +107,7 @@ class EvalMetrics:
     """
     forecast: ForecastMetrics
     calibration: CalibrationMetrics | None = None
+    accuracy_bands: AccuracyBandMetrics | None = None
     slices: dict[str, dict] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -100,6 +117,8 @@ class EvalMetrics:
         }
         if self.calibration is not None:
             result["calibration"] = self.calibration.to_dict()
+        if self.accuracy_bands is not None:
+            result["accuracy_bands"] = self.accuracy_bands.to_dict()
         if self.slices:
             result["slices"] = self.slices
         return result
@@ -135,6 +154,30 @@ def compute_forecast_metrics(predictions_df: pd.DataFrame) -> ForecastMetrics:
         bias=float(np.mean(errors)),
         std_error=float(np.std(errors)),
         r2=float(r2),
+    )
+
+
+def compute_accuracy_bands(
+    predictions_df: pd.DataFrame,
+    bands: list[float] | None = None,
+) -> AccuracyBandMetrics:
+    """Compute fraction of predictions within +/-N degrees of actual."""
+    if bands is None:
+        bands = [1.0, 2.0, 3.0, 5.0]
+
+    y_true = predictions_df["y_true_f"].values
+    y_pred = predictions_df["y_pred_f"].values
+    abs_error = np.abs(y_true - y_pred)
+
+    def _within(band: float) -> float:
+        return float(np.mean(abs_error <= band))
+
+    return AccuracyBandMetrics(
+        within_1f=_within(1.0) if 1.0 in bands else 0.0,
+        within_2f=_within(2.0) if 2.0 in bands else 0.0,
+        within_3f=_within(3.0) if 3.0 in bands else 0.0,
+        within_5f=_within(5.0) if 5.0 in bands else 0.0,
+        n_samples=len(y_true),
     )
 
 
@@ -262,5 +305,13 @@ def print_metrics_summary(metrics: EvalMetrics) -> None:
         print(f"  80% PI cov:  {100 * cm.coverage_80:.1f}% (target: 80%)")
         print(f"  90% PI cov:  {100 * cm.coverage_90:.1f}% (target: 90%)")
         print(f"  90% width:   {cm.sharpness_90:.1f}°F")
+
+    if metrics.accuracy_bands is not None:
+        ab = metrics.accuracy_bands
+        print("\n--- ACCURACY BANDS ---")
+        print(f"  Within +/-1°F: {100 * ab.within_1f:.1f}%")
+        print(f"  Within +/-2°F: {100 * ab.within_2f:.1f}%")
+        print(f"  Within +/-3°F: {100 * ab.within_3f:.1f}%")
+        print(f"  Within +/-5°F: {100 * ab.within_5f:.1f}%")
 
     print()

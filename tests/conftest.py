@@ -6,6 +6,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
+import sys
+
+# Ensure repo-local `src/` is importable for tests
+SRC_DIR = Path(__file__).resolve().parents[1] / "src"
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
+
 import pytest
 
 # Directory containing test fixtures

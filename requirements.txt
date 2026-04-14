@@ -1,0 +1,20 @@
+# Core dependencies (pinned for reproducibility)
+pandas==2.3.3
+numpy==2.4.1
+pyarrow==23.0.0
+requests==2.32.5
+matplotlib==3.10.8
+seaborn==0.13.2
+scikit-learn==1.8.0
+xgboost==3.1.3
+jupyter==1.1.1
+
+# Calibration (optional)
+scipy==1.17.0
+
+# ERA5 (optional, requires ~/.cdsapirc)
+cdsapi==0.7.7
+xarray==2025.12.0
+
+# Dev
+pytest==9.0.2

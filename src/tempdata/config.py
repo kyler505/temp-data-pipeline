@@ -9,7 +9,11 @@ def project_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
+import os
+
 def data_root() -> Path:
+    if "TEMP_DATA_ROOT" in os.environ:
+        return Path(os.environ["TEMP_DATA_ROOT"])
     return project_root() / "data"
 
 

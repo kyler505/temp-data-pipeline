@@ -6,33 +6,40 @@ A data pipeline for processing temperature data from NOAA (truth) and Open-Meteo
 
 ### 1. Installation
 
+Create/activate a virtual environment, then install:
+
 ```bash
 pip install -e ".[eval]"
 ```
 
-### 2. Fetch Data
+### 2. Build canonical datasets (fetch + clean + aggregate + forecasts + features)
+
+This is the recommended entrypoint for data fetching and feature engineering.
 
 ```bash
-# Get ground truth (NOAA)
-python scripts/fetch_noaa_hourly.py --station KLGA --start 2020-01-01 --end 2024-12-31
-
-# Get forecasts (Open-Meteo)
-python scripts/fetch_openmeteo_daily_forecast.py --station KLGA --forecast-days 14
+tempdata data \
+  --station KLGA \
+  --start 2020-01-01 \
+  --end 2024-12-31 \
+  --timezone America/New_York
 ```
 
-### 3. Build Datasets
+This writes cached, canonical datasets under `data/` by default. On HPRC, pass
+`--data-dir "$TEMP_DATA_ROOT/data"` to write to scratch.
+
+### 3. Run training / experimentation (creates a run folder)
 
 ```bash
-# Create daily max temperature from hourly observations
-python scripts/build_daily_tmax.py --station KLGA --timezone America/New_York
+tempdata train --station KLGA --start 2020-01-01 --end 2024-12-31
 ```
 
-### 4. Run Evaluation
+### 4. Run evaluation / reporting (creates a run folder)
 
 ```bash
-# Evaluate forecast accuracy
-python scripts/eval_daily_tmax.py --station KLGA --start 2020-01-01 --end 2024-12-31
+tempdata eval --station KLGA --start 2020-01-01 --end 2024-12-31
 ```
+
+See `docs/CLI.md` for details and `docs/HPRC_SETUP.md` for running on HPRC.
 
 ## Documentation
 

@@ -8,7 +8,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
-from typing import TYPE_CHECKING
+from pathlib import Path
+from typing import TYPE_CHECKING, cast
 
 import numpy as np
 import pandas as pd
@@ -75,6 +76,8 @@ def load_eval_data(
         # Join forecast and truth data
         df = _join_forecast_truth(forecast_df, truth_df)
 
+    df = _normalize_eval_dates(df)
+
     # Apply filters
     df = _apply_filters(df, config)
 
@@ -96,6 +99,165 @@ def load_eval_data(
         test=test_df,
         full=df,
     )
+
+
+def _normalize_eval_dates(df: pd.DataFrame) -> pd.DataFrame:
+    """Normalize evaluation date columns to plain `date` objects."""
+    df = df.copy()
+
+    if "target_date_local" in df.columns:
+        df["target_date_local"] = pd.to_datetime(df["target_date_local"]).dt.date
+
+    if "date_local" in df.columns:
+        df["date_local"] = pd.to_datetime(df["date_local"]).dt.date
+
+    return df
+
+
+def load_eval_inputs(
+    config: EvalConfig,
+    *,
+    data_dir: Path | str | None = None,
+    forecast_file: Path | str | None = None,
+    truth_file: Path | str | None = None,
+    feature_file: Path | str | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame | None]:
+    """Load evaluation inputs from explicit paths or canonical repo locations.
+
+    The canonical restart path is:
+    - forecasts: `clean/forecasts/openmeteo/<station>/*.parquet`
+    - truth: `clean/daily_tmax/<station>/*.parquet`
+    - features: `train/daily_tmax/<station>/train_daily_tmax.parquet`
+
+    Explicit file arguments take precedence. Feature data is optional.
+    """
+    from tempdata.config import data_root
+
+    if not config.station_ids:
+        raise ValueError("config.station_ids must contain at least one station")
+    if len(config.station_ids) != 1:
+        raise ValueError("load_eval_inputs currently supports exactly one station")
+
+    root = Path(data_dir) if data_dir is not None else data_root()
+    station_id = config.station_ids[0]
+
+    forecast_path = Path(forecast_file) if forecast_file is not None else None
+    truth_path = Path(truth_file) if truth_file is not None else None
+    feature_path = Path(feature_file) if feature_file is not None else None
+
+    forecast_df = _load_forecast_input(root, station_id, forecast_path)
+    truth_df = _load_truth_input(root, station_id, truth_path)
+    feature_df = _load_feature_input(root, station_id, feature_path)
+
+    return forecast_df, truth_df, feature_df
+
+
+def _load_forecast_input(
+    data_dir: Path,
+    station_id: str,
+    forecast_path: Path | None,
+) -> pd.DataFrame:
+    if forecast_path is not None:
+        return _read_parquet_input(forecast_path)
+
+    # CLI canonical path: raw/daily_tmax_forecast/{station}/historical.parquet
+    cli_forecast = data_dir / "raw" / "daily_tmax_forecast" / station_id / "historical.parquet"
+    if cli_forecast.exists():
+        return _read_parquet_input(cli_forecast)
+
+    # Also check for per-file parquets in the forecast directory
+    cli_forecast_dir = data_dir / "raw" / "daily_tmax_forecast" / station_id
+    if cli_forecast_dir.exists():
+        df = _read_parquet_dir(cli_forecast_dir)
+        if not df.empty:
+            return df
+
+    # Legacy paths
+    clean_dir = data_dir / "clean" / "forecasts" / "openmeteo" / station_id
+    raw_dir = data_dir / "raw" / "forecasts" / "openmeteo" / station_id
+
+    for candidate in (clean_dir, raw_dir):
+        if candidate.exists():
+            df = _read_parquet_dir(candidate)
+            if not df.empty:
+                return df
+
+    raise FileNotFoundError(
+        f"No forecast parquet data found for station {station_id}. "
+        f"Checked: {cli_forecast}, {cli_forecast_dir}, {clean_dir}, {raw_dir}"
+    )
+
+
+def _load_truth_input(
+    data_dir: Path,
+    station_id: str,
+    truth_path: Path | None,
+) -> pd.DataFrame:
+    if truth_path is not None:
+        return _read_parquet_input(truth_path)
+
+    # CLI canonical path: clean/daily_tmax/{station}.parquet (single file, not dir)
+    cli_truth = data_dir / "clean" / "daily_tmax" / f"{station_id}.parquet"
+    if cli_truth.exists():
+        return _read_parquet_input(cli_truth)
+
+    # Directory-based paths
+    clean_dir = data_dir / "clean" / "daily_tmax" / station_id
+    legacy_dir = data_dir / "daily_tmax" / station_id
+
+    for candidate in (clean_dir, legacy_dir):
+        if candidate.exists():
+            df = _read_parquet_dir(candidate)
+            if not df.empty:
+                return df
+
+    raise FileNotFoundError(
+        f"No truth parquet data found for station {station_id}. "
+        f"Checked: {cli_truth}, {clean_dir}, {legacy_dir}"
+    )
+
+
+def _load_feature_input(
+    data_dir: Path,
+    station_id: str,
+    feature_path: Path | None,
+) -> pd.DataFrame | None:
+    if feature_path is not None:
+        return _read_parquet_input(feature_path)
+
+    # Check CLI canonical path first (features/train_daily_tmax/{station}.parquet)
+    cli_candidate = data_dir / "features" / "train_daily_tmax" / f"{station_id}.parquet"
+    if cli_candidate.exists():
+        return _read_parquet_input(cli_candidate)
+
+    # Legacy path (train/daily_tmax/{station_id}/train_daily_tmax.parquet)
+    legacy_candidate = data_dir / "train" / "daily_tmax" / station_id / "train_daily_tmax.parquet"
+    if legacy_candidate.exists():
+        return _read_parquet_input(legacy_candidate)
+
+    return None
+
+
+def _read_parquet_input(path: Path) -> pd.DataFrame:
+    if path.is_dir():
+        return _read_parquet_dir(path)
+    if not path.exists():
+        raise FileNotFoundError(f"Parquet input not found: {path}")
+    return cast(pd.DataFrame, pd.read_parquet(path))
+
+
+def _read_parquet_dir(path: Path) -> pd.DataFrame:
+    parquet_paths = sorted(path.glob("*.parquet"))
+    if not parquet_paths:
+        return pd.DataFrame()
+    dataframes = [cast(pd.DataFrame, pd.read_parquet(parquet_path)) for parquet_path in parquet_paths]
+    return cast(pd.DataFrame, pd.concat(dataframes, ignore_index=True))
+
+
+def _as_dataframe(obj: pd.DataFrame | pd.Series) -> pd.DataFrame:
+    if not isinstance(obj, pd.DataFrame):
+        raise TypeError("Expected DataFrame result")
+    return obj
 
 
 def _join_forecast_truth(
@@ -164,21 +326,23 @@ def _apply_filters(df: pd.DataFrame, config: EvalConfig) -> pd.DataFrame:
     original_len = len(df)
 
     # Filter by station
-    df = df[df["station_id"].isin(config.station_ids)]
+    df = _as_dataframe(df.loc[df["station_id"].isin(config.station_ids)].copy())
 
     # Filter by date range
-    df = df[
-        (df["target_date_local"] >= config.start_date_local) &
-        (df["target_date_local"] <= config.end_date_local)
-    ]
+    df = _as_dataframe(
+        df.loc[
+            (df["target_date_local"] >= config.start_date_local)
+            & (df["target_date_local"] <= config.end_date_local)
+        ].copy()
+    )
 
     # Filter by coverage hours if column exists
     if "coverage_hours" in df.columns:
-        df = df[df["coverage_hours"] >= config.min_coverage_hours]
+        df = _as_dataframe(df.loc[df["coverage_hours"] >= config.min_coverage_hours].copy())
 
     # Filter by lead hours if specified
     if config.lead_hours_allowed and "lead_hours" in df.columns:
-        df = df[df["lead_hours"].isin(config.lead_hours_allowed)]
+        df = _as_dataframe(df.loc[df["lead_hours"].isin(config.lead_hours_allowed)].copy())
 
     # Remove rows with NaN in key columns
     required_cols = ["tmax_pred_f", "tmax_actual_f"]

@@ -19,10 +19,12 @@ dependencies = [
     "jupyter>=1.0.0",
 ]
 
+[project.scripts]
+tempdata = "tempdata.cli:main"
+
 [project.optional-dependencies]
-backtest = [
+calibration = [
     "scipy>=1.11",
-    "plotly>=5.15.0",
 ]
 era5 = [
     "cdsapi>=0.6.1",
