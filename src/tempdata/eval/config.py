@@ -48,7 +48,7 @@ class ModelConfig:
         hyperparams: Dictionary of model hyperparameters
         features: List of feature column names
     """
-    type: Literal["passthrough", "ridge", "persistence", "knn", "xgboost"] = "ridge"
+    type: Literal["passthrough", "ridge", "persistence", "knn", "xgboost", "lightgbm", "catboost", "stacked"] = "ridge"
     alpha: float = 1.0
     hyperparams: dict[str, Any] = field(default_factory=dict)
     features: list[str] = field(default_factory=lambda: [

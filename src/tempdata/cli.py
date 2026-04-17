@@ -367,6 +367,44 @@ def _run_eval_like(args: argparse.Namespace, mode: str) -> None:
         )
 
 
+def cmd_tune(args: argparse.Namespace) -> None:
+    """Run hyperparameter tuning for stacked ensemble."""
+    from tempdata.tune import main as tune_main
+    import sys
+    sys.argv = ["tempdata.tune"]
+    if args.data_path:
+        sys.argv += ["--data-path", str(args.data_path)]
+    if args.n_folds:
+        sys.argv += ["--n-folds", str(args.n_folds)]
+    if args.quick:
+        sys.argv += ["--quick"]
+    if args.max_trials:
+        sys.argv += ["--max-trials", str(args.max_trials)]
+    if args.output_dir:
+        sys.argv += ["--output-dir", str(args.output_dir)]
+    tune_main()
+
+
+def cmd_ablate(args: argparse.Namespace) -> None:
+    """Run feature ablation study."""
+    from tempdata.ablate import main as ablate_main
+    import sys
+    sys.argv = ["tempdata.ablate"]
+    if args.data_path:
+        sys.argv += ["--data-path", str(args.data_path)]
+    if args.model:
+        sys.argv += ["--model", args.model]
+    if args.strategy:
+        sys.argv += ["--strategy", args.strategy]
+    if args.train_frac:
+        sys.argv += ["--train-frac", str(args.train_frac)]
+    if args.quick:
+        sys.argv += ["--quick"]
+    if args.output_dir:
+        sys.argv += ["--output-dir", str(args.output_dir)]
+    ablate_main()
+
+
 # -------------------------
 # Parser
 # -------------------------
@@ -404,6 +442,25 @@ def build_parser() -> argparse.ArgumentParser:
     _add_eval_args(p_eval)
     p_eval.set_defaults(func=cmd_eval)
 
+    # tune
+    p_tune = sub.add_parser("tune", help="Tune stacked ensemble hyperparameters")
+    p_tune.add_argument("--data-path", type=Path, default=Path("data/train/daily_tmax/KLGA/train_daily_tmax_enriched.parquet"))
+    p_tune.add_argument("--n-folds", type=int, default=5)
+    p_tune.add_argument("--quick", action="store_true", help="Use quick (small) grid")
+    p_tune.add_argument("--max-trials", type=int, default=None)
+    p_tune.add_argument("--output-dir", type=Path, default=Path("runs/tune"))
+    p_tune.set_defaults(func=cmd_tune)
+
+    # ablate
+    p_ablate = sub.add_parser("ablate", help="Feature ablation study")
+    p_ablate.add_argument("--data-path", type=Path, default=Path("data/train/daily_tmax/KLGA/train_daily_tmax_enriched.parquet"))
+    p_ablate.add_argument("--model", type=str, default="ridge", help="Model type to ablate")
+    p_ablate.add_argument("--strategy", choices=["loo", "loog", "forward", "all"], default="all")
+    p_ablate.add_argument("--train-frac", type=float, default=0.8)
+    p_ablate.add_argument("--quick", action="store_true", help="Skip forward selection (slow)")
+    p_ablate.add_argument("--output-dir", type=Path, default=Path("runs/ablate"))
+    p_ablate.set_defaults(func=cmd_ablate)
+
     return parser
 
 
@@ -429,7 +486,7 @@ def _add_eval_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--test-ratio", type=float, default=0.15)
     p.add_argument("--seed", type=int, default=42)
 
-    p.add_argument("--model-type", choices=["ridge", "passthrough", "persistence", "knn", "xgboost"], default="ridge")
+    p.add_argument("--model-type", choices=["ridge", "passthrough", "persistence", "knn", "xgboost", "lightgbm", "catboost", "stacked"], default="ridge")
     p.add_argument("--model-alpha", type=float, default=1.0)
     p.add_argument("--model-k", type=int, default=5)
 

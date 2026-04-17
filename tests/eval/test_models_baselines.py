@@ -4,6 +4,18 @@ import pytest
 from tempdata.eval.models import KNNForecaster, PersistenceForecaster, create_forecaster
 
 
+class _FixedForecaster:
+    def __init__(self, values):
+        self.values = np.asarray(values, dtype=float)
+        self.fit_calls = 0
+
+    def fit(self, df_train):
+        self.fit_calls += 1
+
+    def predict_mu(self, df):
+        return self.values[: len(df)]
+
+
 class TestPersistenceForecaster:
     def test_predict_standard(self):
         """Test standard persistence prediction using lag feature."""
@@ -91,3 +103,24 @@ class TestKNNForecaster:
     def test_factory_creation(self):
         model = create_forecaster("knn")
         assert isinstance(model, KNNForecaster)
+
+
+class TestEnsembleForecaster:
+    def test_average_predictions(self):
+        from tempdata.eval.models import EnsembleForecaster
+
+        df = pd.DataFrame({"x": [1, 2, 3]})
+        model = EnsembleForecaster([
+            _FixedForecaster([70.0, 71.0, 72.0]),
+            _FixedForecaster([74.0, 75.0, 76.0]),
+        ])
+        model.fit(df)
+        preds = model.predict_mu(df)
+
+        np.testing.assert_allclose(preds, [72.0, 73.0, 74.0])
+
+    def test_factory_creation(self):
+        from tempdata.eval.models import EnsembleForecaster
+
+        model = create_forecaster("ensemble")
+        assert isinstance(model, EnsembleForecaster)

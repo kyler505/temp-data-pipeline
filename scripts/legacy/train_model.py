@@ -23,7 +23,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--station", required=True, help="Station ID")
     parser.add_argument("--start", default="2020-01-01", help="Start date")
     parser.add_argument("--end", default="2024-12-31", help="End date")
-    parser.add_argument("--model-type", required=True, choices=["xgboost", "ridge", "persistence", "knn"], help="Model type")
+    parser.add_argument("--model-type", required=True, choices=["xgboost", "ridge", "persistence", "knn", "lightgbm", "catboost", "stacked"], help="Model type")
     parser.add_argument("--tune", action="store_true", help="Run hyperparameter tuning (XGBoost only)")
     parser.add_argument("--run-name", help="Custom run name")
     return parser.parse_args()

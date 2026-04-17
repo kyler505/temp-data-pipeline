@@ -43,8 +43,11 @@ def load_run_summary(run_dir: Path | str) -> dict[str, Any]:
         config_path = run_dir / "config.json"
         if config_path.exists():
             cfg = json.loads(config_path.read_text())
-            summary["model_type"] = cfg.get("model", {}).get("type")
+            model_cfg = cfg.get("model", {})
+            summary["model_type"] = model_cfg.get("type")
             summary["station_ids"] = cfg.get("station_ids")
+            summary["features"] = model_cfg.get("features")
+            summary["model_hyperparams"] = model_cfg.get("hyperparams", {})
         return summary
 
     # Multi-model run
@@ -88,9 +91,12 @@ def compare_runs(run_dirs: list[Path | str]) -> pd.DataFrame:
         if s["type"] == "single_model":
             fm = s.get("metrics", {}).get("forecast", {})
             ab = s.get("metrics", {}).get("accuracy_bands", {})
+            features = s.get("features") or []
             rows.append({
                 "run_id": run_id,
                 "model": s.get("model_type", "?"),
+                "feature_count": len(features),
+                "features": ", ".join(features) if isinstance(features, list) else str(features),
                 "mae": fm.get("mae"),
                 "rmse": fm.get("rmse"),
                 "bias": fm.get("bias"),

@@ -99,14 +99,20 @@ class TestReportModule:
             "accuracy_bands": {"within_1f": 0.6, "within_2f": 0.85, "n_samples": 100},
         }))
         (run_dir / "config.json").write_text(json.dumps({
-            "model": {"type": "ridge"},
+            "model": {
+                "type": "stacked",
+                "features": ["tmax_pred_f", "lead_hours", "bias_7d"],
+                "hyperparams": {"meta_alpha": 0.01, "stacking_splits": 5},
+            },
             "station_ids": ["KLGA"],
         }))
 
         summary = load_run_summary(run_dir)
         assert summary["run_id"] == "test_001"
         assert summary["type"] == "single_model"
-        assert summary["model_type"] == "ridge"
+        assert summary["model_type"] == "stacked"
+        assert summary["features"] == ["tmax_pred_f", "lead_hours", "bias_7d"]
+        assert summary["model_hyperparams"]["meta_alpha"] == 0.01
         assert summary["metrics"]["forecast"]["mae"] == 1.5
 
     def test_load_multi_model_run(self, tmp_path):
@@ -153,6 +159,7 @@ class TestReportModule:
         assert len(df) == 2
         assert df.iloc[0]["mae"] == 1.5  # sorted by MAE
         assert "within_1f_pct" in df.columns
+        assert "feature_count" in df.columns
 
 
 # ─── Walk-Forward Evaluation ──────────────────────────────────────
@@ -218,6 +225,117 @@ class TestXGBoostModel:
         preds = model.predict_mu(df)
         assert len(preds) == n
         assert all(np.isfinite(preds))
+
+
+
+# ─── LightGBM / CatBoost / Stacking ───────────────────────────────
+
+
+class _FakeBooster:
+    def __init__(self, **params):
+        self.params = params
+        self.mean_ = None
+
+    def fit(self, X, y):
+        self.mean_ = float(np.mean(y))
+        return self
+
+    def predict(self, X):
+        return np.full(len(X), self.mean_, dtype=float)
+
+
+class TestTabularChallengers:
+    def test_create_lightgbm_forecaster(self):
+        from tempdata.eval.models import create_forecaster, LightGBMForecaster
+
+        model = create_forecaster("lightgbm")
+        assert isinstance(model, LightGBMForecaster)
+
+    def test_create_catboost_forecaster(self):
+        from tempdata.eval.models import create_forecaster, CatBoostForecaster
+
+        model = create_forecaster("catboost")
+        assert isinstance(model, CatBoostForecaster)
+
+    def test_lightgbm_fit_predict_with_fake_module(self, monkeypatch):
+        import sys
+        import types
+
+        from tempdata.eval.models import LightGBMForecaster
+
+        monkeypatch.setitem(sys.modules, "lightgbm", types.SimpleNamespace(LGBMRegressor=_FakeBooster))
+
+        df = pd.DataFrame({
+            "tmax_pred_f": [70.0, 71.0, 72.0, 73.0],
+            "sin_doy": [0.1, 0.2, 0.3, 0.4],
+            "cos_doy": [0.9, 0.8, 0.7, 0.6],
+            "bias_7d": [0.0, 0.1, 0.0, -0.1],
+            "bias_14d": [0.0, 0.0, 0.1, 0.0],
+            "lead_hours": [24, 24, 24, 24],
+            "tmax_actual_f": [71.0, 72.0, 73.0, 74.0],
+        })
+
+        model = LightGBMForecaster()
+        model.fit(df)
+        preds = model.predict_mu(df)
+        assert len(preds) == len(df)
+        assert np.all(np.isfinite(preds))
+
+    def test_catboost_fit_predict_with_fake_module(self, monkeypatch):
+        import sys
+        import types
+
+        from tempdata.eval.models import CatBoostForecaster
+
+        monkeypatch.setitem(sys.modules, "catboost", types.SimpleNamespace(CatBoostRegressor=_FakeBooster))
+
+        df = pd.DataFrame({
+            "tmax_pred_f": [70.0, 71.0, 72.0, 73.0],
+            "sin_doy": [0.1, 0.2, 0.3, 0.4],
+            "cos_doy": [0.9, 0.8, 0.7, 0.6],
+            "bias_7d": [0.0, 0.1, 0.0, -0.1],
+            "bias_14d": [0.0, 0.0, 0.1, 0.0],
+            "lead_hours": [24, 24, 24, 24],
+            "tmax_actual_f": [71.0, 72.0, 73.0, 74.0],
+        })
+
+        model = CatBoostForecaster()
+        model.fit(df)
+        preds = model.predict_mu(df)
+        assert len(preds) == len(df)
+        assert np.all(np.isfinite(preds))
+
+    def test_stacked_ensemble_fits_and_predicts(self):
+        from tempdata.eval.models import StackedEnsembleForecaster
+
+        class _ScaledForecaster:
+            def __init__(self, scale):
+                self.scale = scale
+
+            def fit(self, df_train):
+                return None
+
+            def predict_mu(self, df):
+                return df["x"].to_numpy(dtype=float) * self.scale
+
+        df = pd.DataFrame({
+            "x": np.arange(1, 31, dtype=float),
+            "tmax_actual_f": np.arange(1, 31, dtype=float) * 3.0,
+        })
+
+        model = StackedEnsembleForecaster(
+            [
+                ("m1", lambda: _ScaledForecaster(1.0)),
+                ("m2", lambda: _ScaledForecaster(2.0)),
+            ],
+            meta_alpha=0.0,
+        )
+        model.fit(df)
+        preds = model.predict_mu(df)
+
+        assert len(preds) == len(df)
+        assert np.all(np.isfinite(preds))
+        assert np.mean(np.abs(preds - df["tmax_actual_f"].to_numpy())) < 1e-2
 
 
 # ─── Data Path Unification ────────────────────────────────────────

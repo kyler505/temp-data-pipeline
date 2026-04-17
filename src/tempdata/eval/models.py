@@ -6,12 +6,17 @@ No trading concepts - pure temperature prediction only.
 Models:
 - PassthroughForecaster: Uses raw forecast as prediction (baseline)
 - RidgeForecaster: Ridge regression bias correction
+- XGBoostForecaster: Gradient boosted trees baseline
+- LightGBMForecaster: LightGBM regression challenger
+- CatBoostForecaster: CatBoost regression challenger
+- EnsembleForecaster: Equal-weight average of member predictions
+- StackedEnsembleForecaster: OOF-stacked ridge meta-learner
 """
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Protocol, runtime_checkable, Literal, Any
+from typing import Protocol, runtime_checkable, Literal, Any, Callable
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -277,7 +282,7 @@ def create_forecaster(
     """Factory function to create forecaster by type.
 
     Args:
-        model_type: Model type ("passthrough", "ridge", "persistence", "knn", "xgboost")
+        model_type: Model type ("passthrough", "ridge", "persistence", "knn", "xgboost", "lightgbm", "catboost", "stacked")
         alpha: Ridge regularization parameter
         features: Feature columns for model
         hyperparams: Dictionary of hyperparameters for models that support it
@@ -295,6 +300,16 @@ def create_forecaster(
         return KNNForecaster(features=features)
     elif model_type == "xgboost":
         return XGBoostForecaster(features=features, hyperparams=hyperparams)
+    elif model_type == "ensemble":
+        ridge = RidgeForecaster(alpha=alpha, features=features)
+        xgb = XGBoostForecaster(features=features, hyperparams=hyperparams)
+        return EnsembleForecaster([ridge, xgb])
+    elif model_type == "lightgbm":
+        return LightGBMForecaster(features=features, hyperparams=hyperparams)
+    elif model_type == "catboost":
+        return CatBoostForecaster(features=features, hyperparams=hyperparams)
+    elif model_type == "stacked":
+        return StackedEnsembleForecaster.default(alpha=alpha, features=features, hyperparams=hyperparams)
     else:
         raise ValueError(f"Unknown model type: {model_type}")
 
@@ -387,3 +402,221 @@ class KNNForecaster:
         if not available:
             raise ValueError(f"No features found. Expected: {self.features}")
         return df[available].values
+
+
+class EnsembleForecaster:
+    """Equal-weight ensemble forecaster that averages member predictions."""
+
+    def __init__(self, models: list[Forecaster]) -> None:
+        if not models:
+            raise ValueError("EnsembleForecaster requires at least one model")
+        self.models = models
+
+    def fit(self, df_train: pd.DataFrame) -> None:
+        for model in self.models:
+            model.fit(df_train)
+
+    def predict_mu(self, df: pd.DataFrame) -> np.ndarray:
+        preds = [np.asarray(model.predict_mu(df), dtype=float) for model in self.models]
+        if not preds:
+            raise RuntimeError("No ensemble members available")
+        return np.mean(preds, axis=0)
+
+
+def _require_optional_dependency(module_name: str, install_hint: str):
+    try:
+        module = __import__(module_name, fromlist=["*"])
+    except ImportError as exc:  # pragma: no cover - exercised only when deps missing
+        raise ImportError(install_hint) from exc
+    return module
+
+
+class LightGBMForecaster:
+    """LightGBM regression forecaster."""
+
+    DEFAULT_FEATURES = ["tmax_pred_f", "sin_doy", "cos_doy", "bias_7d", "bias_14d", "lead_hours"]
+
+    def __init__(
+        self,
+        features: list[str] | None = None,
+        hyperparams: dict[str, Any] | None = None,
+    ) -> None:
+        self.features = features or self.DEFAULT_FEATURES.copy()
+        self.params = {
+            "objective": "regression",
+            "n_estimators": 300,
+            "learning_rate": 0.05,
+            "num_leaves": 31,
+            "subsample": 0.9,
+            "colsample_bytree": 0.9,
+            "random_state": 42,
+            "n_jobs": -1,
+            "verbose": -1,
+        }
+        if hyperparams:
+            self.params.update(hyperparams)
+        self.model = None
+
+    def fit(self, df_train: pd.DataFrame) -> None:
+        available_features = [f for f in self.features if f in df_train.columns]
+        if not available_features:
+            raise ValueError(f"None of the requested features {self.features} are in the dataframe used for training.")
+
+        lgb = _require_optional_dependency(
+            "lightgbm",
+            "LightGBM is required for model_type='lightgbm' or 'stacked' when LightGBM is enabled. Install with `pip install lightgbm`.",
+        )
+
+        X = df_train[available_features]
+        y = df_train["tmax_actual_f"]
+        self.model = lgb.LGBMRegressor(**self.params)
+        self.model.fit(X, y)
+
+    def predict_mu(self, df: pd.DataFrame) -> np.ndarray:
+        if self.model is None:
+            raise RuntimeError("Model not fitted")
+
+        available_features = [f for f in self.features if f in df.columns]
+        if not available_features:
+            raise ValueError(f"None of the requested features {self.features} are in the dataframe used for prediction.")
+
+        return self.model.predict(df[available_features])
+
+
+class CatBoostForecaster:
+    """CatBoost regression forecaster."""
+
+    DEFAULT_FEATURES = ["tmax_pred_f", "sin_doy", "cos_doy", "bias_7d", "bias_14d", "lead_hours"]
+
+    def __init__(
+        self,
+        features: list[str] | None = None,
+        hyperparams: dict[str, Any] | None = None,
+    ) -> None:
+        self.features = features or self.DEFAULT_FEATURES.copy()
+        self.params = {
+            "loss_function": "RMSE",
+            "iterations": 500,
+            "learning_rate": 0.05,
+            "depth": 6,
+            "random_seed": 42,
+            "allow_writing_files": False,
+            "verbose": False,
+        }
+        if hyperparams:
+            self.params.update(hyperparams)
+        self.model = None
+
+    def fit(self, df_train: pd.DataFrame) -> None:
+        available_features = [f for f in self.features if f in df_train.columns]
+        if not available_features:
+            raise ValueError(f"None of the requested features {self.features} are in the dataframe used for training.")
+
+        catboost = _require_optional_dependency(
+            "catboost",
+            "CatBoost is required for model_type='catboost' or 'stacked' when CatBoost is enabled. Install with `pip install catboost`.",
+        )
+
+        X = df_train[available_features]
+        y = df_train["tmax_actual_f"]
+        self.model = catboost.CatBoostRegressor(**self.params)
+        self.model.fit(X, y)
+
+    def predict_mu(self, df: pd.DataFrame) -> np.ndarray:
+        if self.model is None:
+            raise RuntimeError("Model not fitted")
+
+        available_features = [f for f in self.features if f in df.columns]
+        if not available_features:
+            raise ValueError(f"None of the requested features {self.features} are in the dataframe used for prediction.")
+
+        return np.asarray(self.model.predict(df[available_features]), dtype=float)
+
+
+class StackedEnsembleForecaster:
+    """OOF-stacked ensemble with a ridge meta-learner."""
+
+    def __init__(
+        self,
+        base_model_factories: list[tuple[str, Callable[[], Forecaster]]],
+        meta_alpha: float = 1.0,
+        n_splits: int = 5,
+    ) -> None:
+        if len(base_model_factories) < 2:
+            raise ValueError("StackedEnsembleForecaster requires at least two base models")
+        self.base_model_factories = base_model_factories
+        self.meta_alpha = meta_alpha
+        self.n_splits = n_splits
+        self.meta_model = None
+        self.base_models_: list[tuple[str, Forecaster]] = []
+
+    @classmethod
+    def default(
+        cls,
+        alpha: float = 1.0,
+        features: list[str] | None = None,
+        hyperparams: dict[str, Any] | None = None,
+    ) -> StackedEnsembleForecaster:
+        hyperparams = hyperparams or {}
+        meta_alpha = float(hyperparams.get("meta_alpha", 0.01))
+        n_splits = int(hyperparams.get("stacking_splits", 5))
+
+        xgb_params = hyperparams.get("xgboost") if isinstance(hyperparams.get("xgboost"), dict) else None
+        lgb_params = hyperparams.get("lightgbm") if isinstance(hyperparams.get("lightgbm"), dict) else None
+        cat_params = hyperparams.get("catboost") if isinstance(hyperparams.get("catboost"), dict) else None
+
+        # Tuned defaults for the stacked ensemble on KLGA
+        if xgb_params is None:
+            xgb_params = {"learning_rate": 0.05, "max_depth": 3}
+        if lgb_params is None:
+            lgb_params = {"learning_rate": 0.05, "num_leaves": 15, "n_estimators": 300}
+        if cat_params is None:
+            cat_params = {"learning_rate": 0.05, "iterations": 300}
+
+        factories: list[tuple[str, Callable[[], Forecaster]]] = [
+            ("ridge", lambda: RidgeForecaster(alpha=alpha, features=features)),
+            ("xgboost", lambda: XGBoostForecaster(features=features, hyperparams=xgb_params)),
+            ("lightgbm", lambda: LightGBMForecaster(features=features, hyperparams=lgb_params)),
+            ("catboost", lambda: CatBoostForecaster(features=features, hyperparams=cat_params)),
+        ]
+        return cls(factories, meta_alpha=meta_alpha, n_splits=n_splits)
+
+    def fit(self, df_train: pd.DataFrame) -> None:
+        if len(df_train) < 3:
+            raise ValueError("StackedEnsembleForecaster requires at least 3 training rows")
+
+        from sklearn.linear_model import Ridge
+        from sklearn.model_selection import TimeSeriesSplit
+
+        n_splits = min(self.n_splits, len(df_train) - 1)
+        splitter = TimeSeriesSplit(n_splits=n_splits)
+        y = df_train["tmax_actual_f"].to_numpy(dtype=float)
+        oof = np.full((len(df_train), len(self.base_model_factories)), np.nan, dtype=float)
+
+        for train_idx, val_idx in splitter.split(df_train):
+            train_slice = df_train.iloc[train_idx]
+            val_slice = df_train.iloc[val_idx]
+            for col_idx, (_, factory) in enumerate(self.base_model_factories):
+                model = factory()
+                model.fit(train_slice)
+                oof[val_idx, col_idx] = np.asarray(model.predict_mu(val_slice), dtype=float)
+
+        mask = np.isfinite(oof).all(axis=1)
+        if mask.sum() < 2:
+            raise ValueError("Not enough OOF rows to train stacking meta-learner")
+
+        self.meta_model = Ridge(alpha=self.meta_alpha)
+        self.meta_model.fit(oof[mask], y[mask])
+
+        self.base_models_ = [(name, factory()) for name, factory in self.base_model_factories]
+        for _, model in self.base_models_:
+            model.fit(df_train)
+
+    def predict_mu(self, df: pd.DataFrame) -> np.ndarray:
+        if self.meta_model is None or not self.base_models_:
+            raise RuntimeError("StackedEnsembleForecaster not fitted")
+
+        base_preds = np.column_stack(
+            [np.asarray(model.predict_mu(df), dtype=float) for _, model in self.base_models_]
+        )
+        return np.asarray(self.meta_model.predict(base_preds), dtype=float)
