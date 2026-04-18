@@ -304,6 +304,15 @@ def print_accuracy_report(log_path: Path) -> None:
         print(f"Total predictions: {len(preds)}")
         return
 
+    # Deduplicate: keep the most recent prediction per target_date
+    by_date = {}
+    for p in scored:
+        key = p["target_date"]
+        existing = by_date.get(key)
+        if existing is None or p.get("date", "") > existing.get("date", ""):
+            by_date[key] = p
+    scored = sorted(by_date.values(), key=lambda p: p["target_date"])
+
     model_name = next(
         (
             p.get("model_type")
