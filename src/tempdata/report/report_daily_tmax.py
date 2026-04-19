@@ -8,9 +8,11 @@ This module provides higher-level reporting on top of the eval framework:
 from __future__ import annotations
 
 import json
+from datetime import date
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 
@@ -168,3 +170,108 @@ def print_run_comparison(run_dirs: list[Path | str]) -> None:
     print("=" * 70)
     print(df.to_string(index=False))
     print()
+
+
+def format_live_multi_horizon_report(log_path: Path | str) -> str:
+    """Format a multi-horizon live forecast report from predictions.jsonl.
+
+    Returns a markdown-formatted string suitable for Discord/terminal output.
+    """
+    log_path = Path(log_path)
+    if not log_path.exists():
+        return "No predictions found."
+
+    lines = log_path.read_text().strip().split("\n")
+    preds = [json.loads(l) for l in lines if l.strip()]
+    if not preds:
+        return "No predictions found."
+
+    # Group by horizon_days, deduplicate by most recent per (target_date, horizon)
+    by_key = {}
+    for p in preds:
+        h = p.get("horizon_days", 1)
+        key = (p["target_date"], h)
+        existing = by_key.get(key)
+        if existing is None or p.get("date", "") > existing.get("date", ""):
+            by_key[key] = p
+
+    today = date.today()
+    unscored = [p for p in by_key.values() if p.get("actual_f") is None and p["target_date"] >= str(today)]
+    unscored.sort(key=lambda p: p["target_date"])
+
+    scored = [p for p in by_key.values() if p.get("actual_f") is not None]
+    scored.sort(key=lambda p: (p["target_date"], p.get("horizon_days", 1)))
+
+    model_type = next((p.get("model_type", "model") for p in by_key.values()), "model")
+    model_label = model_type.title()
+
+    # Build report
+    lines_out = []
+
+    # Today's forecasts
+    if unscored:
+        lines_out.append("## 🔮 Forecasts")
+        lines_out.append("")
+        lines_out.append("| Target | Horizon | Raw | {} | Correction |".format(model_label))
+        lines_out.append("|--------|---------|-----|------|------------|")
+        for p in unscored:
+            h = p.get("horizon_days", 1)
+            raw = p["raw_forecast_f"]
+            model = p.get("model_prediction_f", p.get("ridge_prediction_f", raw))
+            corr = model - raw
+            lines_out.append("| {} | +{}d | {:.1f}°F | {:.1f}°F | {:+.1f}°F |".format(
+                p["target_date"], h, raw, model, corr
+            ))
+        lines_out.append("")
+
+    # Accuracy by horizon
+    if scored:
+        horizons = sorted(set(p.get("horizon_days", 1) for p in scored))
+        lines_out.append("## 📊 Accuracy by Horizon")
+        lines_out.append("")
+        lines_out.append("| Horizon | N | Raw MAE | {} MAE | Raw ±1F | {} ±1F |".format(model_label, model_label))
+        lines_out.append("|---------|---|---------|--------|---------|--------|")
+
+        for h in horizons:
+            h_preds = [p for p in scored if p.get("horizon_days", 1) == h]
+            raw_errors = []
+            model_errors = []
+            for p in h_preds:
+                raw_err = p.get("raw_error_f", p["raw_forecast_f"] - p["actual_f"])
+                model_pred = p.get("model_prediction_f", p.get("ridge_prediction_f"))
+                model_err = p.get("model_error_f", p.get("error_f", model_pred - p["actual_f"]))
+                raw_errors.append(raw_err)
+                model_errors.append(model_err)
+            if raw_errors:
+                raw_mae = np.mean(np.abs(raw_errors))
+                model_mae = np.mean(np.abs(model_errors))
+                raw_w1 = np.mean(np.abs(raw_errors) <= 1.0)
+                model_w1 = np.mean(np.abs(model_errors) <= 1.0)
+                lines_out.append("| +{}d | {} | {:.2f}°F | {:.2f}°F | {:.0%} | {:.0%} |".format(
+                    h, len(h_preds), raw_mae, model_mae, raw_w1, model_w1
+                ))
+
+        # Recent scored details (last 10)
+        recent = scored[-10:]
+        lines_out.append("")
+        lines_out.append("### Recent Scored Predictions")
+        lines_out.append("")
+        lines_out.append("| Date | H | Actual | Raw | {} | Raw Err | {} Err |".format(model_label, model_label))
+        lines_out.append("|------|---|--------|-----|------|---------|--------|")
+        for p in recent:
+            h = p.get("horizon_days", 1)
+            raw_err = p.get("raw_error_f", p["raw_forecast_f"] - p["actual_f"])
+            model_pred = p.get("model_prediction_f", p.get("ridge_prediction_f"))
+            model_err = p.get("model_error_f", p.get("error_f", model_pred - p["actual_f"]))
+            lines_out.append("| {} | +{}d | {:.1f} | {:.1f} | {:.1f} | {:+.1f} | {:+.1f} |".format(
+                p["target_date"], h, p["actual_f"], p["raw_forecast_f"],
+                model_pred, raw_err, model_err
+            ))
+
+    # Config
+    lines_out.append("")
+    lines_out.append("---")
+    horizons_used = sorted(set(p.get("horizon_days", 1) for p in preds))
+    lines_out.append(f"**Model:** {model_type} | **Features:** {len(next(iter(by_key.values())).get('feature_set', []))} | **Horizons:** {', '.join(f'+{h}d' for h in horizons_used)}")
+
+    return "\n".join(lines_out)

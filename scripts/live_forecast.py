@@ -31,6 +31,7 @@ STATIONS = {
 }
 
 LIVE_MODEL_TYPE = "stacked"
+LIVE_HORIZONS = [1, 2, 3, 5, 7]  # Forecast horizons in days
 LIVE_FEATURES = [
     "tmax_pred_f",
     "lead_hours",
@@ -63,7 +64,7 @@ def fetch_live_forecast(station_id: str) -> pd.DataFrame:
         "longitude": meta["lon"],
         "daily": "temperature_2m_max",
         "timezone": meta["tz"],
-        "forecast_days": 2,
+        "forecast_days": 8,
     }
 
     resp = requests.get("https://api.open-meteo.com/v1/forecast", params=params, timeout=30)
@@ -290,7 +291,7 @@ def build_live_features(forecast_row: pd.Series, historical_df: pd.DataFrame) ->
 
 
 def print_accuracy_report(log_path: Path) -> None:
-    """Print accuracy history from the predictions log."""
+    """Print accuracy history from the predictions log, broken down by horizon."""
     if not log_path.exists():
         print("No prediction history found.")
         return
@@ -304,21 +305,18 @@ def print_accuracy_report(log_path: Path) -> None:
         print(f"Total predictions: {len(preds)}")
         return
 
-    # Deduplicate: keep the most recent prediction per target_date
-    by_date = {}
+    # Deduplicate: keep the most recent prediction per (target_date, horizon_days)
+    by_key = {}
     for p in scored:
-        key = p["target_date"]
-        existing = by_date.get(key)
+        h = p.get("horizon_days", 1)
+        key = (p["target_date"], h)
+        existing = by_key.get(key)
         if existing is None or p.get("date", "") > existing.get("date", ""):
-            by_date[key] = p
-    scored = sorted(by_date.values(), key=lambda p: p["target_date"])
+            by_key[key] = p
+    scored = sorted(by_key.values(), key=lambda p: (p["target_date"], p.get("horizon_days", 1)))
 
     model_name = next(
-        (
-            p.get("model_type")
-            for p in scored
-            if p.get("model_type")
-        ),
+        (p.get("model_type") for p in scored if p.get("model_type")),
         None,
     )
     if model_name is None:
@@ -330,46 +328,80 @@ def print_accuracy_report(log_path: Path) -> None:
             model_name = "model"
     model_label = str(model_name).title()
 
-    print("\n" + "=" * 65)
-    print("LIVE ACCURACY TRACKING")
-    print("=" * 65)
-    print(f"{'Date':<12} {'Actual':>6} {'Raw':>6} {model_label:>6} {'RawErr':>7} {model_label + 'Err':>8}")
-    print("-" * 65)
+    def _compute_metrics(pred_list):
+        raw_errors = []
+        model_errors = []
+        for p in pred_list:
+            raw_err = p.get("raw_error_f", p["raw_forecast_f"] - p["actual_f"])
+            model_pred = p.get("model_prediction_f", p.get("ridge_prediction_f"))
+            model_err = p.get("model_error_f", p.get("error_f", model_pred - p["actual_f"]))
+            raw_errors.append(raw_err)
+            model_errors.append(model_err)
+        if not raw_errors:
+            return None
+        return {
+            "n": len(raw_errors),
+            "raw_mae": np.mean(np.abs(raw_errors)),
+            "model_mae": np.mean(np.abs(model_errors)),
+            "raw_rmse": np.sqrt(np.mean(np.array(raw_errors) ** 2)),
+            "model_rmse": np.sqrt(np.mean(np.array(model_errors) ** 2)),
+            "raw_within_1": np.mean(np.abs(raw_errors) <= 1.0),
+            "model_within_1": np.mean(np.abs(model_errors) <= 1.0),
+            "raw_within_2": np.mean(np.abs(raw_errors) <= 2.0),
+            "model_within_2": np.mean(np.abs(model_errors) <= 2.0),
+        }
 
-    raw_errors = []
-    model_errors = []
+    def _print_metrics_table(label, metrics):
+        print(f"\n{'=' * 65}")
+        print(f"{label}")
+        print("=" * 65)
+        print(f"{'Date':<12} {'H':>3} {'Actual':>6} {'Raw':>6} {model_label:>6} {'RawErr':>7} {model_label+'Err':>8}")
+        print("-" * 65)
+
+    # Group by horizon
+    horizons = sorted(set(p.get("horizon_days", 1) for p in scored))
+
+    # Overall report
+    _print_metrics_table("LIVE ACCURACY TRACKING (ALL HORIZONS)", scored)
     for p in scored:
+        h = p.get("horizon_days", 1)
         raw_err = p.get("raw_error_f", p["raw_forecast_f"] - p["actual_f"])
         model_pred = p.get("model_prediction_f", p.get("ridge_prediction_f"))
         model_err = p.get("model_error_f", p.get("error_f", model_pred - p["actual_f"]))
-        raw_errors.append(raw_err)
-        model_errors.append(model_err)
-        print(f"{p['target_date']:<12} {p['actual_f']:>6.1f} {p['raw_forecast_f']:>6.1f} "
+        print(f"{p['target_date']:<12} {h:>2}d {p['actual_f']:>6.1f} {p['raw_forecast_f']:>6.1f} "
               f"{model_pred:>6.1f} {raw_err:>+7.1f} {model_err:>+8.1f}")
 
-    raw_mae = np.mean(np.abs(raw_errors))
-    model_mae = np.mean(np.abs(model_errors))
-    raw_rmse = np.sqrt(np.mean(np.array(raw_errors) ** 2))
-    model_rmse = np.sqrt(np.mean(np.array(model_errors) ** 2))
-    raw_within_1 = np.mean(np.abs(raw_errors) <= 1.0)
-    model_within_1 = np.mean(np.abs(model_errors) <= 1.0)
-    raw_within_2 = np.mean(np.abs(raw_errors) <= 2.0)
-    model_within_2 = np.mean(np.abs(model_errors) <= 2.0)
+    overall = _compute_metrics(scored)
+    if overall:
+        print("-" * 65)
+        print(f"{'MAE':<16} {overall['raw_mae']:>6.2f} {overall['model_mae']:>6.2f}")
+        print(f"{'RMSE':<16} {overall['raw_rmse']:>6.2f} {overall['model_rmse']:>6.2f}")
+        print(f"{'±1F':<16} {overall['raw_within_1']:>5.0%} {overall['model_within_1']:>5.0%}")
+        print(f"{'±2F':<16} {overall['raw_within_2']:>5.0%} {overall['model_within_2']:>5.0%}")
 
-    print("-" * 65)
-    print(f"{'MAE':<12} {'':>6} {raw_mae:>6.2f} {model_mae:>6.2f}")
-    print(f"{'RMSE':<12} {'':>6} {raw_rmse:>6.2f} {model_rmse:>6.2f}")
-    print(f"{'±1F':<12} {'':>6} {raw_within_1:>5.0%} {model_within_1:>5.0%}")
-    print(f"{'±2F':<12} {'':>6} {raw_within_2:>5.0%} {model_within_2:>5.0%}")
+    # Per-horizon breakdown
+    if len(horizons) > 1:
+        print(f"\n{'=' * 65}")
+        print("PER-HORIZON BREAKDOWN")
+        print("=" * 65)
+        print(f"{'Horizon':<12} {'N':>4} {'Raw MAE':>8} {model_label+' MAE':>10} {'Raw ±1F':>8} {model_label+' ±1F':>10} {'Improvement':>12}")
+        print("-" * 65)
+        for h in horizons:
+            h_preds = [p for p in scored if p.get("horizon_days", 1) == h]
+            m = _compute_metrics(h_preds)
+            if m:
+                imp = m["raw_mae"] - m["model_mae"]
+                print(f"h={h}d         {m['n']:>4} {m['raw_mae']:>7.2f}° {m['model_mae']:>9.2f}° "
+                      f"{m['raw_within_1']:>7.0%} {m['model_within_1']:>9.0%} {imp:>+11.2f}°")
+
     print(f"\nPredictions: {len(scored)} scored / {len(preds)} total")
+    print(f"Horizons: {', '.join(f'{h}d' for h in horizons)}")
 
-    improvement = raw_mae - model_mae
+    improvement = overall["raw_mae"] - overall["model_mae"] if overall else 0
     if improvement > 0:
         print(f"{model_label} improves MAE by {improvement:.2f}°F over raw forecast")
     else:
         print(f"Raw forecast currently beats {model_label.lower()} by {-improvement:.2f}°F")
-
-    print(f"Model config: {model_name} | features={', '.join(LIVE_FEATURES)}")
 
 
 def run_live_forecast(
@@ -378,25 +410,39 @@ def run_live_forecast(
     log_dir: Path = Path("runs/live"),
     model_type: str = LIVE_MODEL_TYPE,
     alpha: float = 0.01,
+    horizons: list[int] | None = None,
 ) -> list[dict]:
     """Run a live forecast and return results."""
+    if horizons is None:
+        horizons = LIVE_HORIZONS
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / "predictions.jsonl"
     feature_path = data_dir / "train" / "daily_tmax" / station_id / "train_daily_tmax.parquet"
 
     print(f"[live] Fetching forecast for {station_id}...")
     forecast_df = fetch_live_forecast(station_id)
-    print(f"[live] Got {len(forecast_df)} forecast day(s):")
-    for _, row in forecast_df.iterrows():
-        t = row["target_date_local"]
-        t_str = str(t.date() if hasattr(t, "date") else t)
-        print(f"  {t_str}: raw={row['tmax_pred_f']:.1f}°F, lead={row['lead_hours']}h")
 
     print(f"[live] Loading historical data...")
     train_df = load_and_prepare_training_data(data_dir, station_id)
 
     # Backfill actuals from previous predictions
     train_df, n_backfilled = backfill_actuals(log_path, train_df, station_id, feature_path)
+
+    today = date.today()
+
+    # Compute horizon_days and filter to desired horizons
+    forecast_df["horizon_days"] = forecast_df["target_date_local"].apply(
+        lambda td: (pd.Timestamp(td).date() - today).days if hasattr(td, 'date') or isinstance(td, date) else (pd.Timestamp(str(td)).date() - today).days
+    )
+    forecast_df = forecast_df[forecast_df["horizon_days"].isin(horizons)].reset_index(drop=True)
+    print(f"[live] Horizons to predict: {sorted(forecast_df['horizon_days'].tolist())} days")
+
+    print(f"[live] Got {len(forecast_df)} forecast day(s):")
+    for _, row in forecast_df.iterrows():
+        t = row["target_date_local"]
+        t_str = str(t.date() if hasattr(t, "date") else t)
+        h = row.get("horizon_days", "?")
+        print(f"  {t_str}: raw={row['tmax_pred_f']:.1f}°F, lead={row['lead_hours']}h (h={h}d)")
 
     print(f"[live] Training on {len(train_df)} rows ({n_backfilled} new)...")
     if model_type == "stacked":
@@ -440,13 +486,14 @@ def run_live_forecast(
             "ridge_prediction_f": round(prediction, 1),
             "correction_f": round(correction, 1),
             "lead_hours": int(fc_row["lead_hours"]),
+            "horizon_days": int(fc_row["horizon_days"]),
             "alpha": alpha,
             "train_rows": len(train_df),
             "recent_mae": round(recent_metrics.mae, 2),
         }
         results.append(result)
 
-        print(f"\n[live] === {target_str} ===")
+        print(f"\n[live] === {target_str} (h={int(fc_row['horizon_days'])}d) ===")
         print(f"  Raw forecast:    {raw:.1f}°F")
         print(f"  {model_type.title()} predict: {prediction:.1f}°F  (correction: {correction:+.1f}°F)")
 
@@ -469,8 +516,12 @@ def main():
     parser.add_argument("--log-dir", default="runs/live", type=Path)
     parser.add_argument("--model-type", choices=["ridge", "stacked"], default=LIVE_MODEL_TYPE)
     parser.add_argument("--alpha", type=float, default=0.01)
+    parser.add_argument("--horizons", type=int, nargs="+", default=LIVE_HORIZONS,
+                        help="Forecast horizons in days (default: 1 2 3 5 7)")
     parser.add_argument("--report", action="store_true", help="Show accuracy history and exit")
     args = parser.parse_args()
+
+    horizons = sorted(args.horizons)
 
     log_path = args.log_dir / "predictions.jsonl"
     if args.report:
@@ -483,6 +534,7 @@ def main():
         log_dir=args.log_dir,
         model_type=args.model_type,
         alpha=args.alpha,
+        horizons=horizons,
     )
 
 
