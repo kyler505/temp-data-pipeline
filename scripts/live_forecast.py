@@ -358,6 +358,21 @@ def print_accuracy_report(log_path: Path) -> None:
         print(f"{'Date':<12} {'H':>3} {'Actual':>6} {'Raw':>6} {model_label:>6} {'RawErr':>7} {model_label+'Err':>8}")
         print("-" * 65)
 
+    pending_by_key = {}
+    for p in preds:
+        if p.get("actual_f") is not None:
+            continue
+        h = p.get("horizon_days", 1)
+        key = (p["target_date"], h)
+        existing = pending_by_key.get(key)
+        if existing is None or p.get("date", "") > existing.get("date", ""):
+            pending_by_key[key] = p
+
+    pending_counts = {}
+    for p in pending_by_key.values():
+        h = p.get("horizon_days", 1)
+        pending_counts[h] = pending_counts.get(h, 0) + 1
+
     # Group by horizon
     horizons = sorted(set(p.get("horizon_days", 1) for p in scored))
 
@@ -396,6 +411,12 @@ def print_accuracy_report(log_path: Path) -> None:
 
     print(f"\nPredictions: {len(scored)} scored / {len(preds)} total")
     print(f"Horizons: {', '.join(f'{h}d' for h in horizons)}")
+    if pending_counts:
+        pending_summary = ", ".join(
+            f"{h}d={pending_counts[h]}" for h in sorted(pending_counts) if pending_counts[h] > 0
+        )
+        if pending_summary:
+            print(f"Pending scoring: {pending_summary}")
 
     improvement = overall["raw_mae"] - overall["model_mae"] if overall else 0
     if improvement > 0:

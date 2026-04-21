@@ -91,3 +91,28 @@ class TestLiveForecastReporting:
         assert "stacked" in out.lower()
         assert "MAE" in out
         assert "Predictions: 2 scored / 2 total" in out
+
+    def test_accuracy_report_shows_pending_scoring_counts_by_horizon(self, tmp_path, capsys):
+        live_forecast = _load_live_forecast_module()
+
+        log_path = tmp_path / "predictions.jsonl"
+        log_path.write_text(
+            "\n".join(
+                [
+                    '{"date": "2026-04-20T12:00:00+00:00", "target_date": "2026-04-20", "actual_f": 51.6, "raw_forecast_f": 48.0, "model_prediction_f": 48.8, "raw_error_f": -3.6, "model_error_f": -2.8, "model_type": "stacked", "horizon_days": 1}',
+                    '{"date": "2026-04-20T12:00:00+00:00", "target_date": "2026-04-21", "raw_forecast_f": 55.4, "model_prediction_f": 55.6, "model_type": "stacked", "horizon_days": 2}',
+                    '{"date": "2026-04-20T12:00:00+00:00", "target_date": "2026-04-22", "raw_forecast_f": 64.0, "model_prediction_f": 64.1, "model_type": "stacked", "horizon_days": 3}',
+                    '{"date": "2026-04-20T12:00:00+00:00", "target_date": "2026-04-24", "raw_forecast_f": 63.3, "model_prediction_f": 63.4, "model_type": "stacked", "horizon_days": 5}',
+                    '{"date": "2026-04-20T12:00:00+00:00", "target_date": "2026-04-26", "raw_forecast_f": 60.8, "model_prediction_f": 60.8, "model_type": "stacked", "horizon_days": 7}',
+                ]
+            )
+        )
+
+        live_forecast.print_accuracy_report(log_path)
+        out = capsys.readouterr().out
+
+        assert "Pending scoring:" in out
+        assert "2d=1" in out
+        assert "3d=1" in out
+        assert "5d=1" in out
+        assert "7d=1" in out
