@@ -18,12 +18,44 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import requests
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception
 from zoneinfo import ZoneInfo
+
+# Retry on transient errors: 5xx, rate limits, network blips
+def _is_retryable(exc: Exception) -> bool:
+    if isinstance(exc, requests.exceptions.RequestException):
+        if exc.response is not None:
+            status = exc.response.status_code
+            if status == 429 or (500 <= status < 600):
+                return True
+    return False
+
+def _retry(fn):
+    return retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+        retry=retry_if_exception(_is_retryable),
+        reraise=True,
+    )(fn)
 
 sys.path.insert(0, "src")
 
 from tempdata.eval.models import create_forecaster
 from tempdata.eval.metrics import compute_forecast_metrics, compute_accuracy_bands
+
+
+def _fetch_with_retry(url: str, params: dict, timeout: int = 30):
+    """HTTP GET with retry for transient Open-Meteo errors."""
+    import requests as _requests
+
+    def _do_get():
+        resp = _requests.get(url, params=params, timeout=timeout)
+        resp.raise_for_status()
+        return resp
+
+    # Apply tenacity.retry by calling the wrapped function
+    wrapped = _retry(_do_get)
+    return wrapped()
 
 
 STATIONS = {
@@ -67,8 +99,7 @@ def fetch_live_forecast(station_id: str) -> pd.DataFrame:
         "forecast_days": 8,
     }
 
-    resp = requests.get("https://api.open-meteo.com/v1/forecast", params=params, timeout=30)
-    resp.raise_for_status()
+    resp = _fetch_with_retry("https://api.open-meteo.com/v1/forecast", params=params, timeout=30)
     data = resp.json()
 
     daily = data["daily"]
@@ -113,8 +144,11 @@ def fetch_actual_tmax(station_id: str, target_date: date) -> float | None:
     }
 
     try:
-        resp = requests.get("https://historical-forecast-api.open-meteo.com/v1/forecast", params=params, timeout=30)
-        resp.raise_for_status()
+        resp = _fetch_with_retry(
+            "https://historical-forecast-api.open-meteo.com/v1/forecast",
+            params=params,
+            timeout=30,
+        )
         data = resp.json()
         tmax_c = data["daily"]["temperature_2m_max"][0]
         if tmax_c is not None:
@@ -441,7 +475,13 @@ def run_live_forecast(
     feature_path = data_dir / "train" / "daily_tmax" / station_id / "train_daily_tmax.parquet"
 
     print(f"[live] Fetching forecast for {station_id}...")
-    forecast_df = fetch_live_forecast(station_id)
+    try:
+        forecast_df = fetch_live_forecast(station_id)
+    except Exception as e:
+        print(f"[live] ERROR: Forecast fetch failed: {e}")
+        # We can still run the accuracy report with historical scored data
+        print_accuracy_report(log_path)
+        return []
 
     print(f"[live] Loading historical data...")
     train_df = load_and_prepare_training_data(data_dir, station_id)
