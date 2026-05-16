@@ -164,6 +164,57 @@ def main():
     args = parser.parse_args()
 
     log_path = args.log_dir / "predictions.jsonl"
+
+    def fetch_kalshi_markets(target_date, horizon, min_edge=0.05):
+        """Fetch live Kalshi orderbook data."""
+        try:
+            import os
+            from kalshi_python import KalshiClient, MarketsApi
+
+            key_id = os.getenv('KALSHI_API_KEY')
+            key_path = os.path.expanduser(os.getenv('KALSHI_RSA_KEY', '~/.kalshi/rsa_key.pem'))
+
+            if not key_id or not os.path.exists(key_path):
+                print('[kalshi] KALSHI_API_KEY or RSA key not configured, falling back to mock')
+                return None
+
+            with open(key_path) as f:
+                private_key = f.read()
+
+            client = KalshiClient(key_id=key_id, private_key=private_key, base_url='https://api.elections.kalshi.com/trade-api/v2')
+            api = MarketsApi(client)
+
+            date_str = target_date.strftime('%Y%m%d') if hasattr(target_date, 'strftime') else target_date
+            series = f'KXHIGHNY-{date_str}'
+
+            resp = api.get_markets(series_ticker=series, status='open')
+            markets = []
+            for m in resp.markets or []:
+                try:
+                    ob = api.get_market_orderbook(m.ticker)
+                except Exception:
+                    continue
+                ticker = m.ticker
+                threshold = int(ticker.split('-')[-1])
+                yes_bid = max((lvl.price for lvl in (ob.orderbook.yes or [])), default=None) if ob.orderbook else None
+                yes_ask = min((lvl.price for lvl in (ob.orderbook.yes or [])), default=None) if ob.orderbook else None
+                no_bid = max((lvl.price for lvl in (ob.orderbook.no or [])), default=None) if ob.orderbook else None
+                no_ask = min((lvl.price for lvl in (ob.orderbook.no or [])), default=None) if ob.orderbook else None
+
+                markets.append({
+                    'ticker': ticker,
+                    'threshold': threshold,
+                    'yes_bid': yes_bid,
+                    'yes_ask': yes_ask,
+                    'no_bid': no_bid,
+                    'no_ask': no_ask,
+                })
+
+            return markets
+        except Exception as e:
+            print(f'[kalshi] Error fetching Kalshi data: {e}')
+            return None
+
     preds = load_predictions(log_path, args.station)
     if not preds:
         print("[edges] No predictions found")
@@ -181,18 +232,17 @@ def main():
 
         if args.mock:
             markets = generate_mock_markets(target, model_pred, sigma)
-            # Add metadata to each market
-            for m in markets:
-                m["target_date"] = target.isoformat()
-                m["horizon_days"] = horizon
         else:
-            # Live mode: fetch from Kalshi (simplified for now)
-            # In production, you'd fetch real orderbooks here
-            print(f"[edges] WARNING: live mode not fully implemented, falling back to mock for {target}")
-            markets = generate_mock_markets(target, model_pred, sigma)
-            for m in markets:
-                m["target_date"] = target.isoformat()
-                m["horizon_days"] = horizon
+            live_markets = fetch_kalshi_markets(target, horizon, args.min_edge)
+            if live_markets:
+                markets = live_markets
+            else:
+                print(f'[edges] Live Kalshi unavailable for {target}, falling back to mock')
+                markets = generate_mock_markets(target, model_pred, sigma)
+
+        for m in markets:
+            m['target_date'] = target.isoformat()
+            m['horizon_days'] = horizon
 
         ops = compute_edge(model_pred, sigma, markets, args.min_edge)
         all_ops.extend(ops)
