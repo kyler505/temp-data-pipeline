@@ -384,8 +384,8 @@ def save_model_version(
         except Exception:
             pass
 
-    if prev_meta and abs(prev_meta.get("train_rows", 0) - train_rows) < 5:
-        return None  # No significant change, skip saving
+    if prev_meta and prev_meta.get("train_rows", 0) > train_rows + 5:
+        return None  # Don't overwrite a better model with less data
 
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     model_path = model_dir / f"{timestamp}.pkl"
@@ -679,7 +679,7 @@ def run_live_forecast(
                         cached_meta = json.load(f)
             except Exception:
                 pass
-        if cached_meta and abs(cached_meta.get("train_rows", 0) - len(train_df)) >= 5:
+        if cached_meta and (cached_meta.get("train_rows", 0) < len(train_df) - 5):
             print(f"[live] Cached model stale (trained on {cached_meta.get('train_rows')} rows, current {len(train_df)}). Retraining...")
             model = None
 

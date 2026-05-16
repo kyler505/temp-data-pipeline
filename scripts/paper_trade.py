@@ -68,8 +68,10 @@ def kelly_bet_size(bankroll, edge, market_price):
     if market_price <= 0 or market_price >= 1 or edge <= 0:
         return min(1.0, bankroll * 0.02)  # Default: $1 or 2%
 
-    # Kelly formula: f = edge / (price * (1 - price))
-    full_kelly = edge / (market_price * (1 - market_price))
+    # Kelly formula: f* = edge / (1 - price)
+    # For a contract at price p_m with model edge = p - p_m:
+    # Payout odds b = (1/p_m - 1), so f* = edge / (1 - p_m)
+    full_kelly = edge / (1 - market_price)
     # Cap at 25% Kelly, and at 10% of bankroll
     quarter_kelly = full_kelly * KELLY_FRACTION
     capped = min(quarter_kelly * bankroll, bankroll * KELLY_CAP)
