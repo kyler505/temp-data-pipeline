@@ -21,7 +21,11 @@ BET_SIZE_DOLLARS = 1.0
 KELLY_FRACTION = 0.25  # Quarter Kelly for safety
 KELLY_CAP = 0.10  # Max 10% of bankroll per bet
 MAX_DAILY_BETS = 3
-MIN_EDGE = 0.05  # Minimum edge threshold (raised from 0.03 per weekly review)
+# Horizon-dependent edge thresholds
+# Research shows h=1d markets are well-calibrated; even 3% edges are real
+# Longer horizons need wider threshold due to higher uncertainty
+MIN_EDGE = 0.05  # Default fallback (used when horizon isn't in dict)
+MIN_EDGE_BY_HORIZON = {1: 0.03, 2: 0.05, 3: 0.07, 5: 0.08, 7: 0.10}
 
 
 def load_opportunities(log_dir: Path) -> list[dict]:
@@ -78,11 +82,15 @@ def kelly_bet_size(bankroll, edge, market_price):
     return max(1.0, round(capped, 2))
 
 
-def place_paper_bets(opportunities: list[dict], trade_log: Path, bankroll: float) -> list[dict]:
+def place_paper_bets(opportunities: list[dict], trade_log: Path, bankroll: float, min_edge_by_horizon: dict[int, float] = None) -> list[dict]:
     """Place new paper bets from top opportunities.
 
     Skips target dates that already have ANY trade history (open or settled).
     This prevents duplicate bets on the same date across multiple pipeline runs.
+
+    Opportunities are pre-filtered by horizon-dependent MIN_EDGE_BY_HORIZON
+    thresholds before reaching this function. The min_edge_by_horizon dict is
+    accepted for forward compatibility / defense-in-depth checks.
     """
     trades = []
     daily_budget = min(MAX_DAILY_BETS, int(bankroll / BET_SIZE_DOLLARS))
@@ -281,10 +289,10 @@ def main():
         print(report)
         return
 
-    # Filter by min_edge (defense in depth)
-    ops = [op for op in ops if op.get("edge", 0) >= args.min_edge]
+    # Filter by horizon-dependent min_edge (defense in depth)
+    ops = [op for op in ops if op.get("edge", 0) >= MIN_EDGE_BY_HORIZON.get(op.get('horizon_days', 1), args.min_edge)]
     if not ops:
-        print(f"[paper] No opportunities above min_edge={args.min_edge}")
+        print(f"[paper] No opportunities above horizon-dependent min_edge thresholds (default: {args.min_edge})")
         report = generate_report(trade_log, [])
         print(report)
         return

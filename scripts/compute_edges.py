@@ -22,7 +22,11 @@ from scipy import stats
 
 SERIES_TICKER = "KXHIGHNY"
 MOCK_SPREAD = 0.05
-MIN_EDGE = 0.05
+MIN_EDGE = 0.05  # Default fallback (used when horizon isn't in dict)
+# Horizon-dependent edge thresholds
+# Research shows h=1d markets are well-calibrated; even 3% edges are real
+# Longer horizons need wider threshold due to higher uncertainty
+MIN_EDGE_BY_HORIZON = {1: 0.03, 2: 0.05, 3: 0.07, 5: 0.08, 7: 0.10}
 
 
 def load_predictions(log_path: Path, station_id: str):
@@ -119,10 +123,10 @@ def generate_mock_markets(target_date: date, pred: float, sigma: float):
     return markets
 
 
-def compute_edge(prediction_f: float, sigma: float, markets: list[dict], min_edge: float):
+def compute_edge(prediction_f: float, sigma: float, markets: list[dict], min_edge: float, horizon_days: int = 1):
     opportunities = []
+    effective_min_edge = MIN_EDGE_BY_HORIZON.get(horizon_days, min_edge)
     for m in markets:
-        t = m["threshold"]
         model_prob = 1.0 - stats.norm.cdf(t, loc=prediction_f, scale=sigma)
         model_prob = float(np.clip(model_prob, 0.001, 0.999))
 
@@ -132,7 +136,7 @@ def compute_edge(prediction_f: float, sigma: float, markets: list[dict], min_edg
         yes_edge = model_prob - yes_ask
         no_edge = (1.0 - model_prob) - no_ask
 
-        if yes_edge >= min_edge:
+        if yes_edge >= effective_min_edge:
             opportunities.append({
                 "ticker": m["ticker"],
                 "target_date": m.get("target_date"),
@@ -143,7 +147,7 @@ def compute_edge(prediction_f: float, sigma: float, markets: list[dict], min_edg
                 "edge": round(yes_edge, 3),
                 "horizon_days": m.get("horizon_days"),
             })
-        if no_edge >= min_edge:
+        if no_edge >= effective_min_edge:
             opportunities.append({
                 "ticker": m["ticker"],
                 "target_date": m.get("target_date"),
@@ -275,7 +279,7 @@ def main():
             m['target_date'] = target.isoformat()
             m['horizon_days'] = horizon
 
-        ops = compute_edge(model_pred, sigma, markets, args.min_edge)
+        ops = compute_edge(model_pred, sigma, markets, args.min_edge, horizon_days=horizon)
         all_ops.extend(ops)
 
     # Write opportunities
