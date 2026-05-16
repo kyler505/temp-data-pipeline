@@ -309,7 +309,9 @@ def create_forecaster(
     elif model_type == "catboost":
         return CatBoostForecaster(features=features, hyperparams=hyperparams)
     elif model_type == "stacked":
-        return StackedEnsembleForecaster.default(alpha=alpha, features=features, hyperparams=hyperparams)
+        ridge = RidgeForecaster(alpha=alpha, features=features)
+        xgb = XGBoostForecaster(features=features, hyperparams=hyperparams)
+        return EnsembleForecaster([ridge, xgb])
     else:
         raise ValueError(f"Unknown model type: {model_type}")
 
