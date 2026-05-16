@@ -6,15 +6,19 @@ training data, trains ridge on updated history, predicts today's tmax,
 and logs the result.
 
 Usage:
-    python scripts/live_forecast.py [--station KLGA] [--data-dir data] [--log-dir runs/live]
+    python scripts/live_forecast.py [--station KNYC] [--data-dir data] [--log-dir runs/live]
     python scripts/live_forecast.py --report     # Show accuracy history
+
+Station defaults to KNYC (Central Park). Set TEMP_DATA_STATION env var to override.
 """
 import argparse
 import json
+import os
 import sys
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
+import cloudpickle
 import numpy as np
 import pandas as pd
 import requests
@@ -60,6 +64,7 @@ def _fetch_with_retry(url: str, params: dict, timeout: int = 30):
 
 STATIONS = {
     "KLGA": {"lat": 40.7769, "lon": -73.8740, "tz": "America/New_York", "name": "LaGuardia"},
+    "KNYC": {"lat": 40.7789, "lon": -73.9689, "tz": "America/New_York", "name": "Central Park"},
 }
 
 LIVE_MODEL_TYPE = "stacked"
@@ -75,12 +80,14 @@ LIVE_FEATURES = [
     "rmse_30d",
     "sigma_lead",
 ]
+LIVE_FEATURES_BY_HORIZON = {
+    'short': ['tmax_pred_f', 'lead_hours', 'month', 'bias_7d', 'bias_14d', 'rmse_14d'],
+    'medium': ['tmax_pred_f', 'month', 'bias_14d', 'bias_30d', 'rmse_30d', 'sigma_lead'],
+    'long': ['tmax_pred_f', 'month', 'bias_30d', 'rmse_30d', 'sigma_lead'],
+}
 LIVE_STACKED_HYPERPARAMS = {
-    "meta_alpha": 0.01,
-    "stacking_splits": 5,
+    "stacking_splits": None,
     "xgboost": {"learning_rate": 0.05, "max_depth": 3},
-    "lightgbm": {"learning_rate": 0.05, "num_leaves": 15, "n_estimators": 300},
-    "catboost": {"learning_rate": 0.05, "iterations": 300},
 }
 
 
@@ -161,7 +168,7 @@ def fetch_actual_tmax(station_id: str, target_date: date) -> float | None:
 def load_and_prepare_training_data(
     data_dir: Path,
     station_id: str,
-    days_back: int = 365 * 7,
+    days_back: int = 365,
 ) -> pd.DataFrame:
     """Load historical feature table and prepare for training."""
     from tempdata.eval.data import _load_feature_input
@@ -324,6 +331,140 @@ def build_live_features(forecast_row: pd.Series, historical_df: pd.DataFrame) ->
     return pd.DataFrame([features])
 
 
+def _get_model_dir(log_dir: Path) -> Path:
+    """Directory where model versions are stored."""
+    return log_dir.parent / "models"
+
+
+def _scored_predictions_by_horizon(log_path: Path) -> dict[int, int]:
+    """Count scored predictions per horizon from the log."""
+    if not log_path.exists():
+        return {}
+    lines = log_path.read_text().strip().split("\n")
+    counts: dict[int, int] = {}
+    for line in lines:
+        if not line.strip():
+            continue
+        try:
+            pred = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if pred.get("actual_f") is None:
+            continue
+        h = pred.get("horizon_days", 1)
+        counts[h] = counts.get(h, 0) + 1
+    return counts
+
+
+def save_model_version(
+    model,
+    train_rows: int,
+    station_id: str,
+    model_type: str,
+    alpha: float,
+    horizons: list[int],
+    recent_mae: float,
+    log_dir: Path,
+) -> Path | None:
+    """Save model artifact with metadata. Only saves if train_rows changed by >= 5."""
+    model_dir = _get_model_dir(log_dir)
+    model_dir.mkdir(parents=True, exist_ok=True)
+
+    # Check previous version metadata
+    current_link = model_dir / "current.pkl"
+    prev_meta = None
+    if current_link.exists() or current_link.is_symlink():
+        try:
+            # Resolve symlink to get the target file, then look for its .json
+            resolved = current_link.resolve()
+            prev_meta_path = resolved.with_suffix(".json")
+            if prev_meta_path.exists():
+                with open(prev_meta_path) as f:
+                    prev_meta = json.load(f)
+        except Exception:
+            pass
+
+    if prev_meta and abs(prev_meta.get("train_rows", 0) - train_rows) < 5:
+        return None  # No significant change, skip saving
+
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    model_path = model_dir / f"{timestamp}.pkl"
+    meta_path = model_dir / f"{timestamp}.json"
+
+    with open(model_path, "wb") as f:
+        cloudpickle.dump(model, f)
+
+    meta = {
+        "timestamp": timestamp,
+        "station_id": station_id,
+        "model_type": model_type,
+        "train_rows": train_rows,
+        "features": LIVE_FEATURES,
+        "horizons": horizons,
+        "recent_mae": round(recent_mae, 3),
+        "alpha": alpha,
+    }
+    with open(meta_path, "w") as f:
+        json.dump(meta, f, indent=2)
+
+    # Update symlink (remove old if exists)
+    if current_link.exists() or current_link.is_symlink():
+        current_link.unlink()
+    current_link.symlink_to(model_path.name)
+
+    print(f"[live] Saved model version: {model_path.name} ({train_rows} rows, MAE={recent_mae:.2f})")
+    return model_path
+
+
+def load_model_version(log_dir: Path):
+    """Load current model version if available. Returns None on failure."""
+    model_dir = _get_model_dir(log_dir)
+    current_link = model_dir / "current.pkl"
+    if not current_link.exists() and not current_link.is_symlink():
+        return None
+    try:
+        resolved = current_link.resolve()
+        if not resolved.exists():
+            return None
+        with open(resolved, "rb") as f:
+            return cloudpickle.load(f)
+    except Exception as e:
+        print(f"[live] WARNING: Failed to load model version: {e}")
+        return None
+
+
+def validate_prediction(result: dict) -> tuple[bool, str]:
+    """Validate a prediction dict before writing to log."""
+    required = ["target_date", "raw_forecast_f", "model_prediction_f", "lead_hours", "horizon_days"]
+    for field in required:
+        if field not in result or result[field] is None:
+            return False, f"Missing required field: {field}"
+        if isinstance(result[field], float) and (np.isnan(result[field]) or np.isinf(result[field])):
+            return False, f"Invalid numeric value for {field}"
+    if result["lead_hours"] < 0:
+        return False, f"Negative lead_hours: {result['lead_hours']}"
+    if not (-20 <= result["raw_forecast_f"] <= 120):
+        return False, f"Raw forecast out of bounds: {result['raw_forecast_f']}"
+    if not (-20 <= result["model_prediction_f"] <= 120):
+        return False, f"Model prediction out of bounds: {result['model_prediction_f']}"
+    return True, ""
+
+
+def sanity_check_forecast(forecast_df: pd.DataFrame) -> list[str]:
+    """Run sanity checks on fetched forecast data. Returns list of warnings."""
+    warnings = []
+    for _, row in forecast_df.iterrows():
+        raw = row["tmax_pred_f"]
+        if pd.isna(raw) or np.isinf(raw):
+            warnings.append(f"NaN/Inf raw forecast for {row.get('target_date_local', 'unknown')}")
+        elif not (-20 <= raw <= 120):
+            warnings.append(f"Raw forecast {raw:.1f}°F out of bounds for {row.get('target_date_local', 'unknown')}")
+        lead = row.get("lead_hours")
+        if pd.isna(lead) or lead < 0:
+            warnings.append(f"Invalid lead_hours {lead} for {row.get('target_date_local', 'unknown')}")
+    return warnings
+
+
 def print_accuracy_report(log_path: Path) -> None:
     """Print accuracy history from the predictions log, broken down by horizon."""
     if not log_path.exists():
@@ -360,7 +501,8 @@ def print_accuracy_report(log_path: Path) -> None:
             model_name = "ridge"
         else:
             model_name = "model"
-    model_label = str(model_name).title()
+    # Use neutral label for column headers; model_used field provides per-row detail
+    model_label = "Prediction"
 
     def _compute_metrics(pred_list):
         raw_errors = []
@@ -454,13 +596,13 @@ def print_accuracy_report(log_path: Path) -> None:
 
     improvement = overall["raw_mae"] - overall["model_mae"] if overall else 0
     if improvement > 0:
-        print(f"{model_label} improves MAE by {improvement:.2f}°F over raw forecast")
+        print(f"Predictions improve MAE by {improvement:.2f}°F over raw forecast")
     else:
-        print(f"Raw forecast currently beats {model_label.lower()} by {-improvement:.2f}°F")
+        print(f"Raw forecast beats predictions by {-improvement:.2f}°F")
 
 
 def run_live_forecast(
-    station_id: str = "KLGA",
+    station_id: str,
     data_dir: Path = Path("data"),
     log_dir: Path = Path("runs/live"),
     model_type: str = LIVE_MODEL_TYPE,
@@ -472,22 +614,38 @@ def run_live_forecast(
         horizons = LIVE_HORIZONS
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / "predictions.jsonl"
-    feature_path = data_dir / "train" / "daily_tmax" / station_id / "train_daily_tmax.parquet"
+    feature_path = data_dir / "features" / "train_daily_tmax" / f"{station_id}.parquet"
 
     print(f"[live] Fetching forecast for {station_id}...")
     try:
         forecast_df = fetch_live_forecast(station_id)
     except Exception as e:
         print(f"[live] ERROR: Forecast fetch failed: {e}")
-        # We can still run the accuracy report with historical scored data
         print_accuracy_report(log_path)
-        return []
+        sys.exit(1)
+
+    # Sanity checks on fetched forecast
+    warnings = sanity_check_forecast(forecast_df)
+    for w in warnings:
+        print(f"[live] WARNING: {w}")
+    if any("NaN/Inf" in w for w in warnings):
+        print("[live] FATAL: Forecast contains invalid values. Aborting.")
+        sys.exit(1)
 
     print(f"[live] Loading historical data...")
     train_df = load_and_prepare_training_data(data_dir, station_id)
 
     # Backfill actuals from previous predictions
     train_df, n_backfilled = backfill_actuals(log_path, train_df, station_id, feature_path)
+
+    # Log scored prediction counts (retrain trigger visibility)
+    scored_counts = _scored_predictions_by_horizon(log_path)
+    if scored_counts:
+        counts_str = ", ".join(f"{h}d={scored_counts.get(h, 0)}" for h in horizons)
+        print(f"[live] Scored predictions by horizon: {counts_str}")
+        for h in horizons:
+            if scored_counts.get(h, 0) >= 30:
+                print(f"[live] Retrain threshold met: horizon {h}d has {scored_counts[h]} scored predictions")
 
     today = date.today()
 
@@ -505,17 +663,40 @@ def run_live_forecast(
         h = row.get("horizon_days", "?")
         print(f"  {t_str}: raw={row['tmax_pred_f']:.1f}°F, lead={row['lead_hours']}h (h={h}d)")
 
-    print(f"[live] Training on {len(train_df)} rows ({n_backfilled} new)...")
-    if model_type == "stacked":
-        model = create_forecaster(
-            model_type,
-            alpha=alpha,
-            features=LIVE_FEATURES,
-            hyperparams=LIVE_STACKED_HYPERPARAMS,
-        )
-    else:
-        model = create_forecaster(model_type, alpha=alpha, features=LIVE_FEATURES)
-    model.fit(train_df)
+    # Try loading cached model first
+    model = load_model_version(log_dir)
+    if model is not None:
+        print(f"[live] Loaded cached model version")
+        # Still need to verify it's compatible; if train_rows changed significantly, retrain
+        model_dir = _get_model_dir(log_dir)
+        current_link = model_dir / "current.pkl"
+        cached_meta = None
+        if current_link.exists() or current_link.is_symlink():
+            try:
+                meta_path = current_link.resolve().with_suffix(".json")
+                if meta_path.exists():
+                    with open(meta_path) as f:
+                        cached_meta = json.load(f)
+            except Exception:
+                pass
+        if cached_meta and abs(cached_meta.get("train_rows", 0) - len(train_df)) >= 5:
+            print(f"[live] Cached model stale (trained on {cached_meta.get('train_rows')} rows, current {len(train_df)}). Retraining...")
+            model = None
+
+    if model is None:
+        print(f"[live] Training on {len(train_df)} rows ({n_backfilled} new)...")
+        if len(train_df) < 100:
+            print(f"[live] WARNING: Training data only has {len(train_df)} rows (< 100)")
+        if model_type == "stacked":
+            model = create_forecaster(
+                model_type,
+                alpha=alpha,
+                features=LIVE_FEATURES,
+                hyperparams=LIVE_STACKED_HYPERPARAMS,
+            )
+        else:
+            model = create_forecaster(model_type, alpha=alpha, features=LIVE_FEATURES)
+        model.fit(train_df)
 
     # Calibration on recent data
     recent = train_df.tail(90).copy()
@@ -530,11 +711,52 @@ def run_live_forecast(
     results = []
     for _, fc_row in forecast_df.iterrows():
         live_features = build_live_features(fc_row, train_df)
-        prediction = model.predict_mu(live_features)[0]
+        lead_hours = int(fc_row["lead_hours"])
         raw = fc_row["tmax_pred_f"]
+        horizon_days = int(fc_row["horizon_days"])
+
+        # Select horizon-appropriate features
+        if horizon_days <= 2:
+            horizon_features = LIVE_FEATURES_BY_HORIZON['short']
+        elif horizon_days <= 5:
+            horizon_features = LIVE_FEATURES_BY_HORIZON['medium']
+        else:
+            horizon_features = LIVE_FEATURES_BY_HORIZON['long']
+        # Filter live_features to only the relevant features for this horizon
+        horizon_feature_cols = [c for c in horizon_features if c in live_features.columns]
+
+        # Use stacked model only for short leads (≤48h); rolling bias correction for longer leads
+        should_ensemble = (model_type == "stacked" and lead_hours <= 48)
+        if should_ensemble:
+            # Pass only horizon-appropriate features to the model
+            horizon_df = live_features[horizon_feature_cols].copy()
+            # Ensure all features the model expects are present by filling missing
+            for col in LIVE_FEATURES:
+                if col not in horizon_df.columns:
+                    horizon_df[col] = 0.0
+            prediction = model.predict_mu(horizon_df)[0]
+            model_used = "stacked"
+        elif lead_hours > 48:
+            # For longer horizons, apply rolling bias correction
+            # Compute recent rolling bias from training data
+            recent_bias = 0.0
+            if len(train_df) >= 14:
+                recent = train_df.tail(30)
+                if 'tmax_actual_f' in recent.columns and 'tmax_pred_f' in recent.columns:
+                    recent_bias = (recent['tmax_pred_f'] - recent['tmax_actual_f']).mean()
+            prediction = raw - recent_bias  # subtract bias from raw
+            model_used = "bias_corrected"
+        else:
+            prediction = raw
+            model_used = "raw"
+
         correction = prediction - raw
         target = fc_row["target_date_local"]
         target_str = str(target.date() if hasattr(target, "date") else target)
+
+        # Warning for large corrections
+        if abs(correction) > 5.0:
+            print(f"[live] WARNING: Large correction for {target_str}: {correction:+.1f}°F")
 
         result = {
             "date": datetime.now(timezone.utc).isoformat(),
@@ -546,25 +768,49 @@ def run_live_forecast(
             "model_prediction_f": round(prediction, 1),
             "ridge_prediction_f": round(prediction, 1),
             "correction_f": round(correction, 1),
-            "lead_hours": int(fc_row["lead_hours"]),
+            "lead_hours": lead_hours,
             "horizon_days": int(fc_row["horizon_days"]),
             "alpha": alpha,
             "train_rows": len(train_df),
             "recent_mae": round(recent_metrics.mae, 2),
+            "model_used": model_used,
         }
+
+        # Validate before accepting
+        valid, err_msg = validate_prediction(result)
+        if not valid:
+            print(f"[live] ERROR: Prediction validation failed for {target_str}: {err_msg}")
+            continue
+
         results.append(result)
 
-        print(f"\n[live] === {target_str} (h={int(fc_row['horizon_days'])}d) ===")
+        print(f"\n[live] === {target_str} (h={int(fc_row['horizon_days'])}d, model={model_used}) ===")
         print(f"  Raw forecast:    {raw:.1f}°F")
-        print(f"  {model_type.title()} predict: {prediction:.1f}°F  (correction: {correction:+.1f}°F)")
+        print(f"  Predict ({model_used}): {prediction:.1f}°F  (correction: {correction:+.1f}°F)")
 
-    with open(log_path, "a") as f:
-        for r in results:
-            f.write(json.dumps(r) + "\n")
-    print(f"\n[live] Logged to {log_path}")
+    # Write valid results to log
+    if results:
+        with open(log_path, "a") as f:
+            for r in results:
+                f.write(json.dumps(r) + "\n")
+        print(f"\n[live] Logged {len(results)} prediction(s) to {log_path}")
+    else:
+        print(f"\n[live] WARNING: No valid predictions generated")
+        sys.exit(1)
+
+    # Save model version (only if we trained a new one or significant change)
+    save_model_version(
+        model=model,
+        train_rows=len(train_df),
+        station_id=station_id,
+        model_type=model_type,
+        alpha=alpha,
+        horizons=horizons,
+        recent_mae=recent_metrics.mae,
+        log_dir=log_dir,
+    )
 
     # Print accuracy report if we have scored predictions
-    scored = [p for p in results if p.get("actual_f") is not None]
     print_accuracy_report(log_path)
 
     return results
@@ -572,7 +818,7 @@ def run_live_forecast(
 
 def main():
     parser = argparse.ArgumentParser(description="Live daily temperature forecast")
-    parser.add_argument("--station", default="KLGA")
+    parser.add_argument("--station", default=None, help="Station ID (e.g., KNYC, KLGA). Defaults to TEMP_DATA_STATION env var or KNYC")
     parser.add_argument("--data-dir", default="data", type=Path)
     parser.add_argument("--log-dir", default="runs/live", type=Path)
     parser.add_argument("--model-type", choices=["ridge", "stacked"], default=LIVE_MODEL_TYPE)
@@ -583,6 +829,9 @@ def main():
     args = parser.parse_args()
 
     horizons = sorted(args.horizons)
+    
+    # Resolve station: CLI arg > env var > default
+    station_id = args.station or os.getenv("TEMP_DATA_STATION", "KNYC")
 
     log_path = args.log_dir / "predictions.jsonl"
     if args.report:
@@ -590,7 +839,7 @@ def main():
         return
 
     run_live_forecast(
-        station_id=args.station,
+        station_id=station_id,
         data_dir=args.data_dir,
         log_dir=args.log_dir,
         model_type=args.model_type,
