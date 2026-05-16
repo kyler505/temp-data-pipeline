@@ -99,6 +99,27 @@ def model_probabilities(prediction_f: float, sigma: float, thresholds: list[int]
     return probs
 
 
+def ensemble_probability(ensemble_members_str: str | None, threshold: float, prediction_f: float, sigma: float) -> float:
+    """Use ensemble members for direct probability, fall back to normal CDF.
+
+    If ensemble_members_str is available (JSON string of member tmax values in °F),
+    computes P(tmax > threshold) directly as count_exceeding / len(members).
+    Otherwise falls back to 1 - CDF(threshold) using the normal distribution.
+    """
+    if ensemble_members_str:
+        try:
+            members = json.loads(ensemble_members_str)
+            if isinstance(members, list) and len(members) >= 10:
+                count_exceeding = sum(1 for m in members if m > threshold)
+                prob = count_exceeding / len(members)
+                return float(np.clip(prob, 0.001, 0.999))
+        except Exception:
+            pass
+    # Fall back to normal CDF
+    prob = 1.0 - stats.norm.cdf(threshold, loc=prediction_f, scale=sigma)
+    return float(np.clip(prob, 0.001, 0.999))
+
+
 def generate_mock_markets(target_date: date, pred: float, sigma: float):
     markets = []
     low = int(np.floor(pred - 3 * sigma))
@@ -123,12 +144,12 @@ def generate_mock_markets(target_date: date, pred: float, sigma: float):
     return markets
 
 
-def compute_edge(prediction_f: float, sigma: float, markets: list[dict], min_edge: float, horizon_days: int = 1):
+def compute_edge(prediction_f: float, sigma: float, markets: list[dict], min_edge: float, horizon_days: int = 1, ensemble_members: str | None = None):
     opportunities = []
     effective_min_edge = MIN_EDGE_BY_HORIZON.get(horizon_days, min_edge)
     for m in markets:
-        model_prob = 1.0 - stats.norm.cdf(t, loc=prediction_f, scale=sigma)
-        model_prob = float(np.clip(model_prob, 0.001, 0.999))
+        threshold = m.get("threshold", 0)
+        model_prob = ensemble_probability(ensemble_members, threshold, prediction_f, sigma)
 
         yes_ask = m.get("yes_ask") or 1.0
         no_ask = m.get("no_ask") or 1.0
@@ -141,7 +162,7 @@ def compute_edge(prediction_f: float, sigma: float, markets: list[dict], min_edg
                 "ticker": m["ticker"],
                 "target_date": m.get("target_date"),
                 "side": "YES",
-                "threshold": t,
+                "threshold": threshold,
                 "model_prob": round(model_prob, 3),
                 "market_price": m.get("yes_ask"),
                 "edge": round(yes_edge, 3),
@@ -152,7 +173,7 @@ def compute_edge(prediction_f: float, sigma: float, markets: list[dict], min_edg
                 "ticker": m["ticker"],
                 "target_date": m.get("target_date"),
                 "side": "NO",
-                "threshold": t,
+                "threshold": threshold,
                 "model_prob": round(1.0 - model_prob, 3),
                 "market_price": m.get("no_ask"),
                 "edge": round(no_edge, 3),
@@ -279,7 +300,7 @@ def main():
             m['target_date'] = target.isoformat()
             m['horizon_days'] = horizon
 
-        ops = compute_edge(model_pred, sigma, markets, args.min_edge, horizon_days=horizon)
+        ops = compute_edge(model_pred, sigma, markets, args.min_edge, horizon_days=horizon, ensemble_members=pred.get("ensemble_members"))
         all_ops.extend(ops)
 
     # Write opportunities

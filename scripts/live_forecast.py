@@ -134,6 +134,50 @@ def fetch_live_forecast(station_id: str) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def fetch_ensemble_data(station_id: str) -> dict[str, list[float]]:
+    """Fetch GEFS ensemble data from Open-Meteo ensemble API.
+
+    Returns a dict mapping target date strings (YYYY-MM-DD) to lists of 30
+    ensemble member tmax values in °F.
+    """
+    meta = STATIONS.get(station_id)
+    if not meta:
+        raise ValueError(f"Unknown station: {station_id}")
+
+    params = {
+        "latitude": meta["lat"],
+        "longitude": meta["lon"],
+        "daily": "temperature_2m_max",
+        "models": "gfs_seamless",
+        "timezone": meta["tz"],
+        "forecast_days": 8,
+    }
+
+    resp = _fetch_with_retry(
+        "https://ensemble-api.open-meteo.com/v1/ensemble", params=params, timeout=30
+    )
+    data = resp.json()
+
+    daily = data["daily"]
+    dates = daily["time"]
+    member_keys = [f"temperature_2m_max_member{m:02d}" for m in range(1, 31)]
+
+    ensemble_map: dict[str, list[float]] = {}
+    for i, date_str in enumerate(dates):
+        members_c = []
+        for key in member_keys:
+            val = daily.get(key, [None])[i]
+            if val is None:
+                continue
+            members_c.append(val)
+        if len(members_c) < 10:
+            continue  # skip dates with too few members
+        members_f = [round(c * 9 / 5 + 32, 1) for c in members_c]
+        ensemble_map[date_str] = members_f
+
+    return ensemble_map
+
+
 def fetch_actual_tmax(station_id: str, target_date: date) -> float | None:
     """Fetch yesterday's actual tmax from Open-Meteo historical API."""
     meta = STATIONS.get(station_id)
@@ -624,6 +668,15 @@ def run_live_forecast(
         print_accuracy_report(log_path)
         sys.exit(1)
 
+    # Fetch GEFS ensemble data
+    ensemble_data: dict[str, list[float]] = {}
+    try:
+        print(f"[live] Fetching GEFS ensemble data...")
+        ensemble_data = fetch_ensemble_data(station_id)
+        print(f"[live] Got ensemble data for {len(ensemble_data)} date(s)")
+    except Exception as e:
+        print(f"[live] WARNING: Ensemble fetch failed: {e}")
+
     # Sanity checks on fetched forecast
     warnings = sanity_check_forecast(forecast_df)
     for w in warnings:
@@ -775,6 +828,12 @@ def run_live_forecast(
             "recent_mae": round(recent_metrics.mae, 2),
             "model_used": model_used,
         }
+
+        # Attach ensemble data if available
+        if target_str in ensemble_data:
+            members = ensemble_data[target_str]
+            result["ensemble_spread_f"] = round(max(members) - min(members), 1)
+            result["ensemble_members"] = json.dumps(members)
 
         # Validate before accepting
         valid, err_msg = validate_prediction(result)
