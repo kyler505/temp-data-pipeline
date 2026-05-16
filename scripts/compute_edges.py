@@ -126,8 +126,11 @@ def compute_edge(prediction_f: float, sigma: float, markets: list[dict], min_edg
         model_prob = 1.0 - stats.norm.cdf(t, loc=prediction_f, scale=sigma)
         model_prob = float(np.clip(model_prob, 0.001, 0.999))
 
-        yes_edge = model_prob - m.get("yes_ask", 1.0)
-        no_edge = (1.0 - model_prob) - m.get("no_ask", 1.0)
+        yes_ask = m.get("yes_ask") or 1.0
+        no_ask = m.get("no_ask") or 1.0
+
+        yes_edge = model_prob - yes_ask
+        no_edge = (1.0 - model_prob) - no_ask
 
         if yes_edge >= min_edge:
             opportunities.append({
@@ -168,8 +171,8 @@ def main():
     def fetch_kalshi_markets(target_date, horizon, min_edge=0.05):
         """Fetch live Kalshi orderbook data."""
         try:
-            import os
-            from kalshi_python import KalshiClient, MarketsApi
+            import os, re, time
+            from kalshi_python import KalshiClient, MarketsApi, Configuration
 
             key_id = os.getenv('KALSHI_API_KEY')
             key_path = os.path.expanduser(os.getenv('KALSHI_RSA_KEY', '~/.kalshi/rsa_key.pem'))
@@ -178,24 +181,47 @@ def main():
                 print('[kalshi] KALSHI_API_KEY or RSA key not configured, falling back to mock')
                 return None
 
-            with open(key_path) as f:
-                private_key = f.read()
+            config = Configuration(
+                host='https://api.elections.kalshi.com/trade-api/v2',
+            )
+            config.api_key = key_id
+            config.key_file = key_path
 
-            client = KalshiClient(key_id=key_id, private_key=private_key, base_url='https://api.elections.kalshi.com/trade-api/v2')
+            client = KalshiClient(configuration=config)
             api = MarketsApi(client)
 
-            date_str = target_date.strftime('%Y%m%d') if hasattr(target_date, 'strftime') else target_date
-            series = f'KXHIGHNY-{date_str}'
-
-            resp = api.get_markets(series_ticker=series, status='open')
+            # Kalshi uses KXHIGHNY as the series ticker (no date suffix)
+            # Markets are named KXHIGHNY-26MAY17-T## or KXHIGHNY-26MAY17-B##.#
+            time.sleep(0.5)
+            resp = api.get_markets(series_ticker='KXHIGHNY', status='open')
+            time.sleep(0.3)
             markets = []
+            target_str = target_date.strftime('%y%b%d').upper() if hasattr(target_date, 'strftime') else str(target_date)
+
             for m in resp.markets or []:
+                ticker = m.ticker
+                # Skip markets for other dates
+                if target_str not in ticker:
+                    continue
+
                 try:
-                    ob = api.get_market_orderbook(m.ticker)
+                    ob = api.get_market_orderbook(ticker)
+                    time.sleep(0.3)
                 except Exception:
                     continue
-                ticker = m.ticker
-                threshold = int(ticker.split('-')[-1])
+
+                # Parse threshold from ticker suffix
+                # Format: KXHIGHNY-26MAY17-T90  (standard, threshold=90)
+                #         KXHIGHNY-26MAY17-B89.5 (bucket, center=89.5)
+                suffix = ticker.split('-')[-1]
+                if suffix.startswith('T'):
+                    threshold = int(suffix[1:])
+                elif suffix.startswith('B'):
+                    # Bucket contract: use the center value as threshold
+                    threshold = float(suffix[1:])
+                else:
+                    continue
+
                 yes_bid = max((lvl.price for lvl in (ob.orderbook.yes or [])), default=None) if ob.orderbook else None
                 yes_ask = min((lvl.price for lvl in (ob.orderbook.yes or [])), default=None) if ob.orderbook else None
                 no_bid = max((lvl.price for lvl in (ob.orderbook.no or [])), default=None) if ob.orderbook else None
@@ -208,9 +234,10 @@ def main():
                     'yes_ask': yes_ask,
                     'no_bid': no_bid,
                     'no_ask': no_ask,
+                    'is_bucket': suffix.startswith('B'),
                 })
 
-            return markets
+            return markets if markets else None
         except Exception as e:
             print(f'[kalshi] Error fetching Kalshi data: {e}')
             return None
@@ -231,6 +258,10 @@ def main():
         sigma = empirical_sigma(log_path, horizon, recent_mae)
 
         if args.mock:
+            markets = generate_mock_markets(target, model_pred, sigma)
+        elif target <= date.today():
+            # Past dates don't have active Kalshi markets (all settled)
+            # Use mock for edge analysis on scored predictions
             markets = generate_mock_markets(target, model_pred, sigma)
         else:
             live_markets = fetch_kalshi_markets(target, horizon, args.min_edge)
